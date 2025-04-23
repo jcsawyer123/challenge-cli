@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "leetcode_cli"
+version = "0.1.0"
+description = "A local LeetCode testing CLI"
+authors = [{ name="Your Name", email="your@email.com" }]
+dependencies = [
+    "colorama",
+    "psutil"
+]
+
+[project.scripts]
+leetcode-cli = "leetcode_cli.cli:main"
