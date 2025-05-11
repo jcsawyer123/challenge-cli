@@ -283,8 +283,8 @@ class LeetCodeTester:
                 avg_time=format_time(avg_time / 1000) if avg_time is not None else "N/A",
                 min_time=format_time(min_time / 1000) if min_time is not None else "N/A",
                 max_time=format_time(max_time / 1000) if max_time is not None else "N/A",
-                avg_mem_kb=avg_mem_str,
-                max_peak_mem=max_mem_str,
+                avg_mem_str=avg_mem_str,
+                max_peak_mem_str=max_mem_str, 
                 profile_stdout=extra_stdout if extra_stdout else ""
             )
 

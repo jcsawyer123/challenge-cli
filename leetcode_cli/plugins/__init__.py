@@ -1,4 +1,5 @@
 from leetcode_cli.plugins.go_plugin import GoPlugin
+from leetcode_cli.plugins.javascript_plugin import JavaScriptPlugin
 from .language_plugin import LanguagePlugin
 from .python_plugin import PythonPlugin
 
@@ -15,3 +16,4 @@ def all_plugins():
 
 register_plugin(PythonPlugin)
 register_plugin(GoPlugin)
+register_plugin(JavaScriptPlugin)  # Register the new JavaScript plugin
