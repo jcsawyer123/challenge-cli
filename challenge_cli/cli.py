@@ -2,16 +2,17 @@ import argparse
 import argcomplete
 import os
 import json
-from leetcode_cli.tester import LeetCodeTester
-from leetcode_cli.plugins.docker_utils import shutdown_all_leetcode_containers
+from challenge_cli.tester import ChallengeTester
+from challenge_cli.plugins.docker_utils import shutdown_all_containers
 
-def load_config():
+def load_config(config_path=None):
     config_paths = [
-        os.path.join(os.getcwd(), "leetcode_cli_config.json"),
-        os.path.expanduser("~/.leetcode_cli_config.json"),
+        config_path if config_path else None,
+        os.path.join(os.getcwd(), "challenge_cli_config.json"),
+        os.path.expanduser("~/.challenge_cli_config.json"),
     ]
     for path in config_paths:
-        if os.path.exists(path):
+        if path and os.path.exists(path):
             with open(path, "r") as f:
                 return json.load(f)
     return {}
@@ -36,11 +37,27 @@ def resolve_language_shorthand(lang_shorthand):
     return language_map.get(lang_shorthand, lang_shorthand)
 
 def main():
-    parser = argparse.ArgumentParser(description="LeetCode Local Testing CLI")
+    parser = argparse.ArgumentParser(description="Challenge Testing CLI")
+    
+    # Global options
+    parser.add_argument(
+        "--platform", "-p", type=str,
+        help="Challenge platform (leetcode, aoc, etc.)"
+    )
+    parser.add_argument(
+        "--config", type=str,
+        help="Path to config file"
+    )
+    parser.add_argument(
+        "--debug", action="store_true", 
+        help="Show full tracebacks and extra debug info"
+    )
+    
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
     
-    init_parser = subparsers.add_parser("init", help="Initialize a new problem")
-    init_parser.add_argument("problem_id", help="LeetCode problem ID or name")
+    # Init command
+    init_parser = subparsers.add_parser("init", help="Initialize a new challenge")
+    init_parser.add_argument("challenge_path", help="Path to the challenge (e.g., 'two-sum' or 'day1/part1')")
     init_parser.add_argument(
         "--language", "-l", type=str, default="python",
         help="Programming language to use (default: python, shorthands: py, js, go)"
@@ -50,11 +67,13 @@ def main():
         help="Function/method name to use in the template (default: solve)"
     )
 
-    subparsers.add_parser("shutdown-containers", help="Shutdown all hot leetcode containers immediately (alias: clean)")
+    # Clean containers
+    subparsers.add_parser("shutdown-containers", help="Shutdown all hot containers immediately (alias: clean)")
     subparsers.add_parser("clean", help="Alias for shutdown-containers")
 
+    # Test command
     test_parser = subparsers.add_parser("test", help="Test a solution")
-    test_parser.add_argument("problem_id", help="LeetCode problem ID or name")
+    test_parser.add_argument("challenge_path", help="Path to the challenge (e.g., 'two-sum' or 'day1/part1')")
     test_parser.add_argument(
         "--language", "-l", type=str,
         help="Programming language to use (default: inferred from testcases.json, shorthands: py, js, go)"
@@ -64,8 +83,9 @@ def main():
     test_parser.add_argument("--cases", "-c", type=str, default=None,
                              help="Specify test cases to run (e.g., '1,2,5-7')")
     
+    # Profile command
     profile_parser = subparsers.add_parser("profile", help="Profile a solution")
-    profile_parser.add_argument("problem_id", help="LeetCode problem ID or name")
+    profile_parser.add_argument("challenge_path", help="Path to the challenge (e.g., 'two-sum' or 'day1/part1')")
     profile_parser.add_argument(
         "--language", "-l", type=str,
         help="Programming language to use (default: inferred from testcases.json, shorthands: py, js, go)"
@@ -77,17 +97,14 @@ def main():
     profile_parser.add_argument("--cases", "-c", type=str, default=None,
                                 help="Specify test cases to run (e.g., '1,2,5-7')")
     
+    # Analyze command
     analyze_parser = subparsers.add_parser("analyze", help="Analyze solution complexity (Python only)")
-    analyze_parser.add_argument("problem_id", help="LeetCode problem ID or name")
+    analyze_parser.add_argument("challenge_path", help="Path to the challenge (e.g., 'two-sum' or 'day1/part1')")
     analyze_parser.add_argument(
         "--language", "-l", type=str, default="python",
         help="Programming language to use (default: python, shorthands: py, js, go)"
     )
     
-    parser.add_argument(
-        "--debug", action="store_true", help="Show full tracebacks and extra debug info"
-    )
-
     argcomplete.autocomplete(parser)
     args = parser.parse_args()    
     
@@ -95,18 +112,39 @@ def main():
         parser.print_help()
         return
     
-    config = load_config()
+    config = load_config(args.config)
     problems_dir = config.get("problems_dir", os.getcwd())
+    
+    # Determine platform - order of precedence:
+    # 1. Command line arg (--platform)
+    # 2. Config default_platform
+    # 3. Fallback to "leetcode"
+    platform = args.platform or config.get("default_platform", "leetcode")
+    
+    # Get platform-specific settings
+    platform_config = config.get("platforms", {}).get(platform, {})
+    
+    # Determine language - order of precedence:
+    # 1. Command line arg (--language)
+    # 2. Platform config default language
+    # 3. Let the tester infer from testcases.json
+    language = resolve_language_shorthand(getattr(args, 'language', None))
+    if not language:
+        language = platform_config.get("language")
 
+    # Clean containers and exit if requested
     if args.command in ("shutdown-containers", "clean"):
-        shutdown_all_leetcode_containers()
-        print("Shutdown all leetcode containers.")
+        shutdown_all_containers()
+        print(f"Shutdown all {platform} containers.")
         return
 
-    language = resolve_language_shorthand(getattr(args, 'language', None))
+    # Create tester with the platform prefix in the problem path
+    challenge_path = getattr(args, 'challenge_path', None)
+    full_path = os.path.join(problems_dir, platform, challenge_path) if challenge_path else None
     
-    tester = LeetCodeTester(
-        problem_id=args.problem_id,
+    tester = ChallengeTester(
+        platform=platform,
+        challenge_path=challenge_path,
         language=language,
         problems_dir=problems_dir
     )

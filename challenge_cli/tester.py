@@ -4,10 +4,10 @@ import time
 import traceback
 from typing import Any, Dict, Set
 
-from leetcode_cli.plugins import get_plugin
-from leetcode_cli.utils import format_time, format_memory
-from leetcode_cli.analyzer import ComplexityAnalyzer
-from leetcode_cli.output import (
+from challenge_cli.plugins import get_plugin
+from challenge_cli.utils import format_time, format_memory
+from challenge_cli.analyzer import ComplexityAnalyzer
+from challenge_cli.output import (
     print_complexity_footer,
     print_complexity_header,
     print_complexity_method,
@@ -42,19 +42,22 @@ COMPLEXITY_TEMPLATE = """{
 }
 """
 
-class LeetCodeTester:
-    def __init__(self, problem_id: str, language: str = None, problems_dir: str = None):
-        self.problem_id = problem_id
-        self.problems_dir = problems_dir or os.getcwd()
-        self.problem_dir = os.path.join(self.problems_dir, problem_id)
+class ChallengeTester:
+    def __init__(self, platform: str, challenge_path: str, language: str = None, problems_dir: str = None):
+        self.platform = platform
+        self.challenge_path = challenge_path
         self.language = language
-        self.testcases_file = os.path.join(self.problem_dir, "testcases.json")
+        self.problems_dir = problems_dir or os.getcwd()
+        
+        # Full path: problems_dir/platform/challenge_path
+        self.challenge_dir = os.path.join(self.problems_dir, self.platform, self.challenge_path)
+        self.testcases_file = os.path.join(self.challenge_dir, "testcases.json")
 
     def _get_language_dir(self, language=None):
         language = language or self.language
         if not language:
             raise ValueError("Language not specified")
-        return os.path.join(self.problem_dir, language)
+        return os.path.join(self.challenge_dir, language)
 
     def get_solution_path(self, language=None):
         language = language or self.language
@@ -85,7 +88,8 @@ class LeetCodeTester:
         raise ValueError(f"No implementation found for language: {language}")
 
     def init_problem(self, language="python", function_name="solve") -> None:
-        os.makedirs(self.problem_dir, exist_ok=True)
+        # Create challenge directory structure
+        os.makedirs(self.challenge_dir, exist_ok=True)
         
         plugin = get_plugin(language)
         if not plugin:
@@ -109,14 +113,16 @@ class LeetCodeTester:
                     testcases = json.load(f)
                 
                 if "language" in testcases and "function" in testcases:
+                    # Convert old format to new format
                     old_language = testcases["language"]
                     old_function = testcases["function"]
                     old_testcases = testcases["testcases"]
                     
-                    if old_language != language and os.path.exists(os.path.join(self.problem_dir, plugin.solution_filename)):
+                    # If changing languages, move old solution file to language subdirectory
+                    if old_language != language and os.path.exists(os.path.join(self.challenge_dir, plugin.solution_filename)):
                         old_plugin = get_plugin(old_language)
                         if old_plugin:
-                            old_solution_path = os.path.join(self.problem_dir, old_plugin.solution_filename)
+                            old_solution_path = os.path.join(self.challenge_dir, old_plugin.solution_filename)
                             old_language_dir = self._get_language_dir(old_language)
                             os.makedirs(old_language_dir, exist_ok=True)
                             new_old_solution_path = os.path.join(old_language_dir, old_plugin.solution_filename)
@@ -131,6 +137,7 @@ class LeetCodeTester:
                         }
                     }
                 else:
+                    # Already in new format
                     implementations = testcases.get("implementations", {})
                     implementations[language] = {"function": function_name}
                     testcases["implementations"] = implementations
@@ -140,21 +147,23 @@ class LeetCodeTester:
                 
                 testcases_updated = True
             except json.JSONDecodeError:
+                # If testcases.json exists but is invalid, create a new one
                 pass
         
         if not testcases_updated:
+            # Create new testcases.json with language implementation
             with open(self.testcases_file, "w") as f:
                 f.write(TESTCASES_TEMPLATE % (language, function_name))
         
-        complexity_file = os.path.join(self.problem_dir, "complexity.json")
+        complexity_file = os.path.join(self.challenge_dir, "complexity.json")
         if not os.path.exists(complexity_file):
             with open(complexity_file, "w") as f:
                 f.write(COMPLEXITY_TEMPLATE)
         
         if solution_already_exists:
-            print(f"Updated {language} implementation for problem {self.problem_id}.")
+            print(f"Updated {language} implementation for {self.platform} challenge: {self.challenge_path}")
         else:
-            print(f"Added {language} implementation for problem {self.problem_id}.")
+            print(f"Added {language} implementation for {self.platform} challenge: {self.challenge_path}")
         
         print(f"Please edit {solution_path} with your solution.")
         print(f"And update {self.testcases_file} with your test cases.")
@@ -241,7 +250,7 @@ class LeetCodeTester:
             )
             return
 
-        print_warning(f"Testing {language} function: {function_name}")
+        print_warning(f"Testing {language} function: {function_name} ({self.platform}/{self.challenge_path})")
 
         batch_inputs = []
         batch_expected = []
@@ -343,7 +352,7 @@ class LeetCodeTester:
             )
             return
 
-        print_warning(f"Profiling {language} function: {function_name}")
+        print_warning(f"Profiling {language} function: {function_name} ({self.platform}/{self.challenge_path})")
 
         language_dir = self._get_language_dir(language)
         total_profiled = 0
@@ -468,7 +477,7 @@ class LeetCodeTester:
             for method_name, analysis in complexity_results.items():
                 print_complexity_method(method_name, analysis)
 
-            complexity_file = os.path.join(self.problem_dir, f"{language}_complexity.json")
+            complexity_file = os.path.join(self.challenge_dir, f"{language}_complexity.json")
             with open(complexity_file, "w") as f:
                 complexity_data = {
                     "analyzed_at": time.strftime("%Y-%m-%d %H:%M:%S"),

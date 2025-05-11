@@ -67,17 +67,17 @@ def shutdown_hot_container(container_name):
     except FileNotFoundError:
         pass
 
-def shutdown_all_leetcode_containers():
+def shutdown_all_containers():
     result = subprocess.run(
         ["docker", "ps", "--format", "{{.Names}}"],
         capture_output=True, text=True
     )
     for name in result.stdout.splitlines():
-        if name.startswith("leetcode-"):
+        if name.startswith("challenge-"):
             print(f"Stopping container: {name}")
             shutdown_hot_container(name)
     for fname in os.listdir("/tmp"):
-        if fname.startswith("leetcode-") and fname.endswith(".lastused"):
+        if fname.startswith("challenge-") and fname.endswith(".lastused"):
             try:
                 os.remove(os.path.join("/tmp", fname))
             except Exception:

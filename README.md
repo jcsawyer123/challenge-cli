@@ -1,134 +1,164 @@
-# LeetCode Local Testing CLI
+# Challenge CLI
 
-A modern, user-friendly command-line tool for **testing, profiling, and analyzing LeetCode solutions locally**—with pretty output, tab completion, and easy configuration.
-
----
+A modern, cross-platform coding challenge testing tool that supports multiple languages and challenge sources.
 
 ## Features
 
-- **Initialize** new LeetCode problem folders with solution and test templates
-- **Run tests** with detailed or summary output, including memory and timing stats
-- **Profile** your solution’s performance over many iterations
-- **Analyze** time and space complexity heuristically
-- **Pretty, colorized output** for easy reading
-- **Tab completion** for all commands and options (via [argcomplete](https://pypi.org/project/argcomplete/))
-- **Configurable**: set your problems directory via config file or CLI flag
-
----
+- **Multi-platform**: Support for LeetCode, Advent of Code, and custom challenges
+- **Multiple languages**: Python, JavaScript, Go (and easily extensible)
+- **Path-based**: Flexible directory structure for different challenge types
+- **Test, profile, analyze**: Comprehensive performance testing
+- **Containerized**: Secure execution in Docker containers
+- **Pretty output**: Clear, colorful test results
 
 ## Installation
 
-### 1. **Clone and Install**
-
 ```sh
-git clone https://github.com/jcsawyer123/leetcode-cli.git
-cd leetcode-cli
+# Clone and install
+git clone https://github.com/jcsawyer123/challenge-cli.git
+cd challenge-cli
 pip install -e .
-```
 
-### 2. **(Optional) Enable Tab Completion**
-
-#### Bash
-
-```sh
+# (Optional) Enable tab completion
+pip install argcomplete
 activate-global-python-argcomplete --user
 ```
-Restart your shell.
 
-#### Zsh
-
-Add to your `.zshrc`:
-```sh
-eval "$(register-python-argcomplete leetcode-cli)"
-```
-
-#### Fish
+## Quick Start
 
 ```sh
-register-python-argcomplete leetcode-cli | source
+# LeetCode challenge
+challenge-cli -p leetcode init two-sum -l python
+# Edit the solution and test cases
+challenge-cli -p leetcode test two-sum -l python
+
+# Advent of Code challenge
+challenge-cli -p aoc init 2023/day1/part1 -l python
+# Edit the solution and test cases
+challenge-cli -p aoc test 2023/day1/part1 -l python
 ```
-
----
-
-## Usage
-
-### **Initialize a New Problem**
-
-```sh
-leetcode-cli init two-sum
-```
-Creates a folder `two-sum/` with `solution.py` and `testcases.json` templates.
-
-### **Edit Your Solution and Test Cases**
-
-- Edit `two-sum/solution.py` with your code.
-- Edit `two-sum/testcases.json` with your test cases.
-
-### **Run Tests**
-
-```sh
-leetcode-cli test two-sum
-```
-
-- Add `-d` or `--detailed` for detailed output.
-- Use `-c` or `--cases` to run specific cases (e.g., `-c 1,3-5`).
-
-### **Profile Performance**
-
-```sh
-leetcode-cli profile two-sum
-```
-
-- Use `-i` or `--iterations` to set the number of runs.
-
-### **Analyze Complexity**
-
-```sh
-leetcode-cli analyze two-sum
-```
-
----
 
 ## Configuration
 
-By default, the CLI looks for problems in the current directory.  
-To set a custom problems directory, create a config file:
+Create `~/.challenge_cli_config.json`:
 
-**`~/.leetcode_cli_config.json`**
 ```json
 {
-  "problems_dir": "/absolute/path/to/your/leetcode/problems"
+  "problems_dir": "/path/to/your/challenges",
+  "default_platform": "leetcode",
+  "platforms": {
+    "leetcode": {
+      "language": "python"
+    },
+    "aoc": {
+      "language": "go",
+    }
+  }
 }
 ```
 
+## Commands
 
----
-
-## Example Workflow
+### Initialize a Challenge
 
 ```sh
-leetcode-cli init two-sum
-# Edit two-sum/solution.py and two-sum/testcases.json
-leetcode-cli test two-sum -d
-leetcode-cli profile two-sum -i 1000
-leetcode-cli analyze two-sum
+challenge-cli [-p PLATFORM] init CHALLENGE_PATH [-l LANGUAGE] [-f FUNCTION_NAME]
 ```
 
----
+### Test a Solution
 
-## Advanced
+```sh
+challenge-cli [-p PLATFORM] test CHALLENGE_PATH [-l LANGUAGE] [-d] [-c CASES]
+```
 
-- **Tab completion**: See [Installation](#installation) for enabling shell completion.
-- **Custom config**: Use `--config /path/to/config.json` to specify a config file.
+Options:
+- `-d, --detailed`: Show detailed output
+- `-c, --cases`: Specify test cases (e.g., `1,3-5`)
 
----
+### Profile Performance
+
+```sh
+challenge-cli [-p PLATFORM] profile CHALLENGE_PATH [-l LANGUAGE] [-i ITERATIONS]
+```
+
+Options:
+- `-i, --iterations`: Number of iterations (default: 100)
+- `-d, --detailed`: Show detailed output
+
+### Analyze Complexity (Python only)
+
+```sh
+challenge-cli [-p PLATFORM] analyze CHALLENGE_PATH [-l LANGUAGE]
+```
+
+### Clean Up Containers
+
+```sh
+challenge-cli shutdown-containers
+```
+
+## Language Shorthands
+
+- `py` for Python
+- `js` for JavaScript
+- `go` for Go
+
+Example: `challenge-cli init two-sum -l py`
+
+## Directory Structure
+
+```
+challenges/
+  leetcode/
+    two-sum/
+      python/
+        solution.py
+      go/
+        solution.go
+      testcases.json
+  aoc/
+    2023/
+      day1/
+        part1/
+          python/
+            solution.py
+          testcases.json
+```
+
+## Global Options
+
+- `-p, --platform`: Challenge platform (leetcode, aoc, etc.)
+- `--config`: Specify config file path
+- `--debug`: Show detailed error information
 
 ## Requirements
 
 - Python 3.7+
-- [colorama](https://pypi.org/project/colorama/)
-- [psutil](https://pypi.org/project/psutil/)
-- [argcomplete](https://pypi.org/project/argcomplete/)
+- Docker
+- colorama, psutil, argcomplete
 
-All dependencies are installed automatically.
+## Examples
 
+### Multiple Languages
+
+```sh
+# Initialize in different languages
+challenge-cli -p leetcode init two-sum -l python
+challenge-cli -p leetcode init two-sum -l go
+
+# Compare performance
+challenge-cli -p leetcode profile two-sum -l python
+challenge-cli -p leetcode profile two-sum -l go
+```
+
+### Testing Specific Cases
+
+```sh
+challenge-cli -p leetcode test two-sum -l python -c 1,3,5-7
+```
+
+### Detailed Analysis
+
+```sh
+challenge-cli -p leetcode analyze two-sum -l python
+```
