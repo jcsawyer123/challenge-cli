@@ -33,12 +33,12 @@ class ComplexityAnalyzer:
         for node in solution_class.body:
             if isinstance(node, self.ast.FunctionDef) and node.name != '__init__':
                 method_name = node.name
-                time_complexity, space_complexity = self._analyze_function(node)
+                time_complexity, space_complexity, data_structures, is_recursive = self._analyze_function(node)
                 
                 results[method_name] = {
                     "time_complexity": time_complexity,
                     "space_complexity": space_complexity,
-                    "explanation": self._generate_explanation(node, time_complexity, space_complexity)
+                    "explanation": self._generate_explanation(node, time_complexity, space_complexity, data_structures, is_recursive)
                 }
         
         return results
@@ -60,14 +60,13 @@ class ComplexityAnalyzer:
         # Determine space complexity
         space_complexity = self._determine_space_complexity(loop_info, is_recursive, data_structures)
         
-        return time_complexity, space_complexity
+        return time_complexity, space_complexity, data_structures, is_recursive
     
     def _analyze_loops(self, func_node):
         """Count loops and their nesting levels."""
         result = {
             "loops": 0,
             "max_nesting": 0,
-            "current_nesting": 0,
             "nested_loops": []
         }
         
@@ -174,12 +173,9 @@ class ComplexityAnalyzer:
         # Default: if nothing specific is found, assume constant space
         return "O(1)"
     
-    def _generate_explanation(self, func_node, time_complexity, space_complexity):
+    def _generate_explanation(self, func_node, time_complexity, space_complexity, data_structures, is_recursive):
         """Generate a human-readable explanation of the complexity analysis."""
         explanation = []
-        
-        # Extract the function's code as a string for reference
-        func_code = self.ast.unparse(func_node) if hasattr(self.ast, 'unparse') else "[Code unavailable]"
         
         # Time complexity explanation
         if time_complexity == "O(1)":
@@ -224,9 +220,9 @@ class ComplexityAnalyzer:
         # Add optimization advice
         if time_complexity in ["O(n²)", "O(n^3)", "O(2^n)"]:
             explanation.append("\nOptimization Potential:")
-            if "dict_or_set" not in func_code:
+            if not data_structures["dict_or_set"]:
                 explanation.append("  • Consider using hash maps (dictionaries) for O(1) lookups.")
-            if time_complexity == "O(2^n)" and is_recursive:
+            if time_complexity == "O(2^n)" and is_recursive: # is_recursive is now directly available
                 explanation.append("  • Consider memoization to avoid redundant recursive calculations.")
         
         return "\n".join(explanation)

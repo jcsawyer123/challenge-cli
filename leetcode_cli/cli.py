@@ -58,7 +58,7 @@ def main():
                                 help="Specify test cases to run (e.g., '1,2,5-7')")
     
     # Analyze command
-    analyze_parser = subparsers.add_parser("analyze", help="Analyze solution complexity")
+    analyze_parser = subparsers.add_parser("analyze", help="Analyze solution complexity (Python only)")
     analyze_parser.add_argument("problem_id", help="LeetCode problem ID or name")
     
     parser.add_argument(

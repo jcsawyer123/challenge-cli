@@ -28,8 +28,6 @@ def print_test_case_result(
     expected,
     stdout,
     input_values=None,
-    current_mem=None,
-    mem_change=None,
     detailed=False
 ):
     status = f"{SUCCESS}✅ PASSED{RESET}" if passed else f"{FAIL}❌ FAILED{RESET}"
@@ -39,10 +37,6 @@ def print_test_case_result(
             print(f"  {INFO}Input:   {RESET}{input_values}")
         print(f"  {INFO}Expected:{RESET} {expected}")
         print(f"  {INFO}Output  :{RESET} {result}")
-        if current_mem is not None:
-            print(f"  {INFO}Current Memory:      {RESET}{current_mem}")
-        if mem_change is not None:
-            print(f"  {INFO}Process Memory Change:{RESET} {mem_change}")
     elif not passed:
         print(f"  {INFO}Expected:{RESET} {expected}")
         print(f"  {INFO}Output  :{RESET} {result}")
@@ -50,8 +44,6 @@ def print_test_case_result(
         print(f"  {STDOUT}Stdout:{RESET}")
         for line in stdout.splitlines():
             print(f"    {line}")
-    # if detailed:
-    #     print_divider()
 
 def print_error(
     case_num,
@@ -71,8 +63,6 @@ def print_error(
         print(f"  {STDOUT}Stdout before error:{RESET}")
         for line in stdout.splitlines():
             print(f"    {line}")
-    # if detailed:
-    #     print_divider()
 
 def print_profile_result(
     case_num,
@@ -80,20 +70,16 @@ def print_profile_result(
     avg_time,
     min_time,
     max_time,
-    avg_current_mem,
-    avg_peak_mem,
+    avg_mem_kb,
     max_peak_mem,
-    memory_change,
-    warmup_stdout,
     profile_stdout
 ):
     print(f"{WARNING}Test Case {case_num}:{RESET} {BOLD}{INFO}{iterations} iterations{RESET}")
     print(f"  Time: avg={avg_time}, min={min_time}, max={max_time}")
-    print(f"  Memory: avg current={avg_current_mem}, avg peak={avg_peak_mem}, max peak={max_peak_mem}")
-    print(f"  Process memory change: {memory_change}")
-    if warmup_stdout or profile_stdout:
+    print(f"  Memory: avg mem={avg_mem_kb}, max peak={max_peak_mem}")
+    if profile_stdout:
         print(f"  {STDOUT}Stdout sample:{RESET}")
-        lines = (warmup_stdout + profile_stdout).splitlines()
+        lines = profile_stdout.splitlines()
         for line in lines[:5]:
             print(f"    {line}")
         if len(lines) > 5:
@@ -143,5 +129,5 @@ def print_complexity_method(method_name, analysis):
     print(f"\n{INFO}Explanation:{RESET}")
     print(analysis['explanation'])
 
-def print_complexity_footer(complexity_file):
+def print_complexity_footer():
     print(f"\n{INFO}{'='*60}{RESET}")

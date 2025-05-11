@@ -180,8 +180,6 @@ class LeetCodeTester:
                     expected=expected,
                     stdout=extra_stdout if extra_stdout else None,
                     input_values=input_values if detailed else None,
-                    current_mem=None,
-                    mem_change=None,
                     detailed=detailed
                 )
             else:
@@ -278,11 +276,8 @@ class LeetCodeTester:
                 avg_time=format_time(avg_time / 1000) if avg_time is not None else "N/A",
                 min_time=format_time(min_time / 1000) if min_time is not None else "N/A",
                 max_time=format_time(max_time / 1000) if max_time is not None else "N/A",
-                avg_current_mem=f"{avg_mem:.2f} KB" if avg_mem is not None else "N/A",
-                avg_peak_mem=f"{avg_mem:.2f} KB" if avg_mem is not None else "N/A",
+                avg_mem_kb=f"{avg_mem:.2f} KB" if avg_mem is not None else "N/A",
                 max_peak_mem=f"{max_mem:.2f} KB" if max_mem is not None else "N/A",
-                memory_change="N/A",
-                warmup_stdout="",
                 profile_stdout=extra_stdout if extra_stdout else ""
             )
 
@@ -290,7 +285,45 @@ class LeetCodeTester:
 
 
     def analyze_complexity(self) -> None:
-        # (unchanged)
+        try:
+            test_config = self.load_testcases()
+        except FileNotFoundError as e:
+            print_error(
+                case_num="N/A",
+                error_msg=str(e),
+                detailed=True
+            )
+            return
+        except json.JSONDecodeError as e:
+            print_error(
+                case_num="N/A",
+                error_msg=f"Error decoding test cases file ({self.testcases_file}): {str(e)}",
+                detailed=True
+            )
+            return
+
+        language = test_config.get("language", "python")
+        plugin = get_plugin(language)
+
+        if not plugin:
+            print_error(
+                case_num="N/A",
+                error_msg=f"No plugin found for language: {language}",
+                detailed=True
+            )
+            return
+
+        # Check if the language is Python before proceeding with analysis
+        if language.lower() != "python":
+            print_error(
+                case_num="N/A",
+                error_msg=f"Complexity analysis currently only supports Python. Problem language is '{language}'.",
+                detailed=True
+            )
+            return
+
+        # Define self.solution_file before it's used by subsequent checks or operations
+        self.solution_file = os.path.join(self.problem_dir, plugin.solution_filename)
         if not os.path.exists(self.solution_file):
             print_error(
                 case_num="N/A",
@@ -324,7 +357,7 @@ class LeetCodeTester:
                 }
                 json.dump(complexity_data, f, indent=2)
 
-            print_complexity_footer(complexity_file)
+            print_complexity_footer()
 
         except ImportError:
             print_error(
