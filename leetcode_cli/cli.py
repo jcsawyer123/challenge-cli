@@ -6,7 +6,6 @@ from leetcode_cli.tester import LeetCodeTester
 from leetcode_cli.plugins.docker_utils import shutdown_all_leetcode_containers
 
 def load_config():
-    # Check current directory first, then home directory
     config_paths = [
         os.path.join(os.getcwd(), "leetcode_cli_config.json"),
         os.path.expanduser("~/.leetcode_cli_config.json"),
@@ -17,39 +16,60 @@ def load_config():
                 return json.load(f)
     return {}
 
+def resolve_language_shorthand(lang_shorthand):
+    if not lang_shorthand:
+        return None
+        
+    language_map = {
+        # Full names
+        "python": "python",
+        "go": "go",
+        "javascript": "javascript",
+        # Shorthands
+        "py": "python",
+        "js": "javascript",
+        "node": "javascript",
+        "golang": "go",
+    }
+    
+    lang_shorthand = lang_shorthand.lower()
+    return language_map.get(lang_shorthand, lang_shorthand)
 
 def main():
     parser = argparse.ArgumentParser(description="LeetCode Local Testing CLI")
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
     
-    # Init command
     init_parser = subparsers.add_parser("init", help="Initialize a new problem")
     init_parser.add_argument("problem_id", help="LeetCode problem ID or name")
     init_parser.add_argument(
         "--language", "-l", type=str, default="python",
-        help="Programming language to use (default: python)"
+        help="Programming language to use (default: python, shorthands: py, js, go)"
     )
     init_parser.add_argument(
         "--function", "-f", type=str, default="solve",
         help="Function/method name to use in the template (default: solve)"
     )
 
-    
-    # Hot Containers
     subparsers.add_parser("shutdown-containers", help="Shutdown all hot leetcode containers immediately (alias: clean)")
     subparsers.add_parser("clean", help="Alias for shutdown-containers")
 
-    # Test command
     test_parser = subparsers.add_parser("test", help="Test a solution")
     test_parser.add_argument("problem_id", help="LeetCode problem ID or name")
+    test_parser.add_argument(
+        "--language", "-l", type=str,
+        help="Programming language to use (default: inferred from testcases.json, shorthands: py, js, go)"
+    )
     test_parser.add_argument("--detailed", "-d", action="store_true", 
                              help="Display detailed test information")
     test_parser.add_argument("--cases", "-c", type=str, default=None,
                              help="Specify test cases to run (e.g., '1,2,5-7')")
     
-    # Profile command
     profile_parser = subparsers.add_parser("profile", help="Profile a solution")
     profile_parser.add_argument("problem_id", help="LeetCode problem ID or name")
+    profile_parser.add_argument(
+        "--language", "-l", type=str,
+        help="Programming language to use (default: inferred from testcases.json, shorthands: py, js, go)"
+    )
     profile_parser.add_argument("--iterations", "-i", type=int, default=100, 
                                 help="Number of iterations for profiling")
     profile_parser.add_argument("--detailed", "-d", action="store_true", 
@@ -57,9 +77,12 @@ def main():
     profile_parser.add_argument("--cases", "-c", type=str, default=None,
                                 help="Specify test cases to run (e.g., '1,2,5-7')")
     
-    # Analyze command
     analyze_parser = subparsers.add_parser("analyze", help="Analyze solution complexity (Python only)")
     analyze_parser.add_argument("problem_id", help="LeetCode problem ID or name")
+    analyze_parser.add_argument(
+        "--language", "-l", type=str, default="python",
+        help="Programming language to use (default: python, shorthands: py, js, go)"
+    )
     
     parser.add_argument(
         "--debug", action="store_true", help="Show full tracebacks and extra debug info"
@@ -72,28 +95,30 @@ def main():
         parser.print_help()
         return
     
-
-    
     config = load_config()
-    problems_dir = config.get("problems_dir", os.getcwd())  # fallback to cwd
+    problems_dir = config.get("problems_dir", os.getcwd())
 
     if args.command in ("shutdown-containers", "clean"):
         shutdown_all_leetcode_containers()
         print("Shutdown all leetcode containers.")
-        return  # Exit after cleaning
+        return
 
-
-    # Pass to your tester
-    tester = LeetCodeTester(args.problem_id, problems_dir=problems_dir)
+    language = resolve_language_shorthand(getattr(args, 'language', None))
+    
+    tester = LeetCodeTester(
+        problem_id=args.problem_id,
+        language=language,
+        problems_dir=problems_dir
+    )
     
     if args.command == "init":
-        tester.init_problem(language=args.language, function_name=args.function)
+        tester.init_problem(language=language, function_name=args.function)
     elif args.command == "test":
-        tester.run_tests(detailed=args.detailed, cases_arg=args.cases)
+        tester.run_tests(language=language, detailed=args.detailed, cases_arg=args.cases)
     elif args.command == "profile":
-        tester.profile(iterations=args.iterations, detailed=args.detailed, cases_arg=args.cases)
+        tester.profile(language=language, iterations=args.iterations, detailed=args.detailed, cases_arg=args.cases)
     elif args.command == "analyze":
-        tester.analyze_complexity()
+        tester.analyze_complexity(language=language)
 
 
 if __name__ == "__main__":

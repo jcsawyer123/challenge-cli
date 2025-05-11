@@ -16,4 +16,4 @@ def all_plugins():
 
 register_plugin(PythonPlugin)
 register_plugin(GoPlugin)
-register_plugin(JavaScriptPlugin)  # Register the new JavaScript plugin
+register_plugin(JavaScriptPlugin)

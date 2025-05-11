@@ -155,8 +155,7 @@ module.exports = {{ Solution }};
         return wrapper_path
 
     def _container_name(self, workdir):
-        # Unique container per language and problem directory
-        return f"leetcode-hot-javascript-18-{os.path.basename(workdir)}"
+        return super()._container_name(workdir)
 
     def run(self, workdir, function_name, input_args, input_data=None):
         self.ensure_image()
@@ -298,7 +297,6 @@ module.exports = {{ Solution }};
                         )
 
         finally:
-            # Clean up temporary files
             if os.path.exists(inputs_json_path):
                 try:
                     os.remove(inputs_json_path)

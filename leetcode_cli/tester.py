@@ -20,14 +20,17 @@ from leetcode_cli.output import (
 )
 
 TESTCASES_TEMPLATE = """{
-    "language": "python",
-    "function": "functionName",
     "testcases": [
         {
             "input": ["param1_value", "param2_value"],
             "output": "expected_output"
         }
-    ]
+    ],
+    "implementations": {
+        "%s": {
+            "function": "%s"
+        }
+    }
 }
 """
 
@@ -40,33 +43,119 @@ COMPLEXITY_TEMPLATE = """{
 """
 
 class LeetCodeTester:
-    def __init__(self, problem_id: str, problems_dir: str = None):
+    def __init__(self, problem_id: str, language: str = None, problems_dir: str = None):
         self.problem_id = problem_id
-        self.problem_dir = os.path.join(problems_dir or os.getcwd(), problem_id)
+        self.problems_dir = problems_dir or os.getcwd()
+        self.problem_dir = os.path.join(self.problems_dir, problem_id)
+        self.language = language
         self.testcases_file = os.path.join(self.problem_dir, "testcases.json")
 
-    def init_problem(self, language="python", function_name="solve") -> None:
-        if os.path.exists(self.problem_dir):
-            print(f"Directory for problem {self.problem_id} already exists.")
-            return
+    def _get_language_dir(self, language=None):
+        language = language or self.language
+        if not language:
+            raise ValueError("Language not specified")
+        return os.path.join(self.problem_dir, language)
 
+    def get_solution_path(self, language=None):
+        language = language or self.language
+        if not language:
+            raise ValueError("Language not specified")
+        
+        plugin = get_plugin(language)
+        if not plugin:
+            raise ValueError(f"No plugin found for language: {language}")
+        
+        language_dir = self._get_language_dir(language)
+        return os.path.join(language_dir, plugin.solution_filename)
+
+    def get_function_name(self, language=None):
+        language = language or self.language
+        if not language:
+            raise ValueError("Language not specified")
+        
+        testcases = self.load_testcases()
+        implementations = testcases.get("implementations", {})
+        
+        if language in implementations:
+            return implementations[language]["function"]
+        
+        if "language" in testcases and testcases["language"] == language:
+            return testcases.get("function", "solve")
+        
+        raise ValueError(f"No implementation found for language: {language}")
+
+    def init_problem(self, language="python", function_name="solve") -> None:
         os.makedirs(self.problem_dir, exist_ok=True)
+        
         plugin = get_plugin(language)
         if not plugin:
             print(f"ERROR: No plugin found for language '{language}'")
             return
-
-        solution_path = os.path.join(self.problem_dir, plugin.solution_filename)
+        
+        language_dir = self._get_language_dir(language)
+        os.makedirs(language_dir, exist_ok=True)
+        
+        solution_path = os.path.join(language_dir, plugin.solution_filename)
+        solution_already_exists = os.path.exists(solution_path)
+        
         with open(solution_path, "w") as f:
             f.write(plugin.solution_template(function_name=function_name))
-        with open(self.testcases_file, "w") as f:
-            f.write(TESTCASES_TEMPLATE.replace("functionName", function_name).replace("python", language))
-
+        
+        testcases_updated = False
+        
+        if os.path.exists(self.testcases_file):
+            try:
+                with open(self.testcases_file, "r") as f:
+                    testcases = json.load(f)
+                
+                if "language" in testcases and "function" in testcases:
+                    old_language = testcases["language"]
+                    old_function = testcases["function"]
+                    old_testcases = testcases["testcases"]
+                    
+                    if old_language != language and os.path.exists(os.path.join(self.problem_dir, plugin.solution_filename)):
+                        old_plugin = get_plugin(old_language)
+                        if old_plugin:
+                            old_solution_path = os.path.join(self.problem_dir, old_plugin.solution_filename)
+                            old_language_dir = self._get_language_dir(old_language)
+                            os.makedirs(old_language_dir, exist_ok=True)
+                            new_old_solution_path = os.path.join(old_language_dir, old_plugin.solution_filename)
+                            if os.path.exists(old_solution_path) and not os.path.exists(new_old_solution_path):
+                                os.rename(old_solution_path, new_old_solution_path)
+                    
+                    testcases = {
+                        "testcases": old_testcases,
+                        "implementations": {
+                            old_language: {"function": old_function},
+                            language: {"function": function_name}
+                        }
+                    }
+                else:
+                    implementations = testcases.get("implementations", {})
+                    implementations[language] = {"function": function_name}
+                    testcases["implementations"] = implementations
+                
+                with open(self.testcases_file, "w") as f:
+                    json.dump(testcases, f, indent=2)
+                
+                testcases_updated = True
+            except json.JSONDecodeError:
+                pass
+        
+        if not testcases_updated:
+            with open(self.testcases_file, "w") as f:
+                f.write(TESTCASES_TEMPLATE % (language, function_name))
+        
         complexity_file = os.path.join(self.problem_dir, "complexity.json")
-        with open(complexity_file, "w") as f:
-            f.write(COMPLEXITY_TEMPLATE)
-
-        print(f"Problem {self.problem_id} initialized successfully.")
+        if not os.path.exists(complexity_file):
+            with open(complexity_file, "w") as f:
+                f.write(COMPLEXITY_TEMPLATE)
+        
+        if solution_already_exists:
+            print(f"Updated {language} implementation for problem {self.problem_id}.")
+        else:
+            print(f"Added {language} implementation for problem {self.problem_id}.")
+        
         print(f"Please edit {solution_path} with your solution.")
         print(f"And update {self.testcases_file} with your test cases.")
 
@@ -110,9 +199,25 @@ class LeetCodeTester:
         except Exception:
             return stdout.strip()
 
-    def run_tests(self, detailed: bool = False, cases_arg: str = None) -> None:
-        test_config = self.load_testcases()
-        language = test_config.get("language", "python")
+    def run_tests(self, language=None, detailed: bool = False, cases_arg: str = None) -> None:
+        language = language or self.language
+        if not language:
+            try:
+                testcases = self.load_testcases()
+                if "language" in testcases:
+                    language = testcases["language"]
+                elif "implementations" in testcases and testcases["implementations"]:
+                    language = next(iter(testcases["implementations"].keys()))
+                else:
+                    raise ValueError("No language specified and could not infer from testcases.json")
+            except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
+                print_error(
+                    case_num="N/A",
+                    error_msg=f"No language specified and could not infer: {str(e)}",
+                    detailed=True
+                )
+                return
+        
         plugin = get_plugin(language)
         if not plugin:
             print_error(
@@ -121,18 +226,27 @@ class LeetCodeTester:
                 detailed=True
             )
             return
+        
+        try:
+            testcases = self.load_testcases()
+            function_name = self.get_function_name(language)
+            testcase_list = testcases["testcases"]
+            selected_cases = self._parse_cases_arg(cases_arg, len(testcase_list))
+        except Exception as e:
+            print_error(
+                case_num="N/A",
+                error_msg=str(e),
+                detailed=True,
+                traceback_str=traceback.format_exc() if detailed else None
+            )
+            return
 
-        function_name = test_config["function"]
-        testcases = test_config["testcases"]
-        selected_cases = self._parse_cases_arg(cases_arg, len(testcases))
+        print_warning(f"Testing {language} function: {function_name}")
 
-        print_warning(f"Testing function: {function_name} (language: {language})")
-
-        # Prepare batch inputs
         batch_inputs = []
         batch_expected = []
         batch_case_nums = []
-        for i, testcase in enumerate(testcases):
+        for i, testcase in enumerate(testcase_list):
             case_num = i + 1
             if case_num not in selected_cases:
                 continue
@@ -140,9 +254,9 @@ class LeetCodeTester:
             batch_expected.append(testcase["output"])
             batch_case_nums.append(case_num)
 
-        # Run all selected test cases in a persistent container
+        language_dir = self._get_language_dir(language)
         start_time = time.time()
-        results = plugin.run_many(self.problem_dir, function_name, batch_inputs)
+        results = plugin.run_many(language_dir, function_name, batch_inputs)
         total_time = time.time() - start_time
 
         total_passed = 0
@@ -154,22 +268,19 @@ class LeetCodeTester:
             expected = batch_expected[idx]
             error = None if exit_code == 0 else stderr
 
-            # Use function-only timing/memory if available
             if profile_info and "time_ms" in profile_info:
                 time_str = format_time(profile_info['time_ms'] / 1000)
             else:
                 time_str = format_time(exec_time) if exec_time is not None else "N/A"
 
-
             if profile_info and "mem_bytes" in profile_info:
                 mem_bytes = profile_info['mem_bytes']
                 mem_str = format_memory(mem_bytes)
             elif max_rss_kb is not None:
-                mem_bytes = max_rss_kb * 1024  # Convert KB to Bytes
+                mem_bytes = max_rss_kb * 1024
                 mem_str = format_memory(mem_bytes)
             else:
                 mem_str = "N/A"
-
 
             if error is None:
                 passed = self._compare_results(result, expected)
@@ -195,14 +306,20 @@ class LeetCodeTester:
                     traceback_str=stderr if detailed else None
                 )
 
-
-        print_summary(total_passed, total_run, len(selected_cases), len(testcases))
+        print_summary(total_passed, total_run, len(selected_cases), len(testcase_list))
         if detailed:
             print(f"Total batch time: {format_time(total_time)}")
 
-    def profile(self, iterations: int = 100, detailed: bool = False, cases_arg: str = None) -> None:
-        test_config = self.load_testcases()
-        language = test_config.get("language", "python")
+    def profile(self, language=None, iterations: int = 100, detailed: bool = False, cases_arg: str = None) -> None:
+        language = language or self.language
+        if not language:
+            print_error(
+                case_num="N/A",
+                error_msg="No language specified",
+                detailed=True
+            )
+            return
+        
         plugin = get_plugin(language)
         if not plugin:
             print_error(
@@ -211,26 +328,35 @@ class LeetCodeTester:
                 detailed=True
             )
             return
+        
+        try:
+            testcases = self.load_testcases()
+            function_name = self.get_function_name(language)
+            testcase_list = testcases["testcases"]
+            selected_cases = self._parse_cases_arg(cases_arg, len(testcase_list))
+        except Exception as e:
+            print_error(
+                case_num="N/A",
+                error_msg=str(e),
+                detailed=True,
+                traceback_str=traceback.format_exc() if detailed else None
+            )
+            return
 
-        function_name = test_config["function"]
-        testcases = test_config["testcases"]
-        selected_cases = self._parse_cases_arg(cases_arg, len(testcases))
+        print_warning(f"Profiling {language} function: {function_name}")
 
-        print_warning(f"Profiling function: {function_name} (language: {language})")
-
+        language_dir = self._get_language_dir(language)
         total_profiled = 0
 
-        for i, testcase in enumerate(testcases):
+        for i, testcase in enumerate(testcase_list):
             case_num = i + 1
             if case_num not in selected_cases:
                 continue
 
             input_values = testcase["input"]
-
-            # Prepare batch input for profiling
             batch_inputs = [input_values] * iterations
 
-            results = plugin.run_many(self.problem_dir, function_name, batch_inputs)
+            results = plugin.run_many(language_dir, function_name, batch_inputs)
             error = None
             times = []
             mems = []
@@ -238,15 +364,14 @@ class LeetCodeTester:
                 if exit_code != 0:
                     error = stderr
                     break
-                # Use function-only profile info if available
                 if profile_info and "time_ms" in profile_info:
                     times.append(profile_info["time_ms"])
                 elif exec_time is not None:
-                    times.append(exec_time * 1000)  # convert s to ms
+                    times.append(exec_time * 1000)
                 if profile_info and "mem_bytes" in profile_info:
-                    mems.append(profile_info["mem_bytes"])  # Already in bytes
+                    mems.append(profile_info["mem_bytes"])
                 elif max_rss_kb is not None:
-                    mems.append(max_rss_kb * 1024)  # Convert KB to bytes
+                    mems.append(max_rss_kb * 1024)
 
             if error is not None:
                 print_error(
@@ -288,30 +413,27 @@ class LeetCodeTester:
                 profile_stdout=extra_stdout if extra_stdout else ""
             )
 
-        print_profile_summary(total_profiled, len(selected_cases), len(testcases))
+        print_profile_summary(total_profiled, len(selected_cases), len(testcase_list))
 
-
-    def analyze_complexity(self) -> None:
-        try:
-            test_config = self.load_testcases()
-        except FileNotFoundError as e:
+    def analyze_complexity(self, language=None) -> None:
+        language = language or self.language
+        if not language:
             print_error(
                 case_num="N/A",
-                error_msg=str(e),
+                error_msg="No language specified",
                 detailed=True
             )
             return
-        except json.JSONDecodeError as e:
+        
+        if language.lower() != "python":
             print_error(
                 case_num="N/A",
-                error_msg=f"Error decoding test cases file ({self.testcases_file}): {str(e)}",
+                error_msg=f"Complexity analysis currently only supports Python. Selected language is '{language}'.",
                 detailed=True
             )
             return
-
-        language = test_config.get("language", "python")
+        
         plugin = get_plugin(language)
-
         if not plugin:
             print_error(
                 case_num="N/A",
@@ -319,22 +441,12 @@ class LeetCodeTester:
                 detailed=True
             )
             return
-
-        # Check if the language is Python before proceeding with analysis
-        if language.lower() != "python":
+        
+        solution_path = self.get_solution_path(language)
+        if not os.path.exists(solution_path):
             print_error(
                 case_num="N/A",
-                error_msg=f"Complexity analysis currently only supports Python. Problem language is '{language}'.",
-                detailed=True
-            )
-            return
-
-        # Define self.solution_file before it's used by subsequent checks or operations
-        self.solution_file = os.path.join(self.problem_dir, plugin.solution_filename)
-        if not os.path.exists(self.solution_file):
-            print_error(
-                case_num="N/A",
-                error_msg=f"Solution file not found: {self.solution_file}",
+                error_msg=f"Solution file not found: {solution_path}",
                 detailed=True
             )
             return
@@ -343,7 +455,7 @@ class LeetCodeTester:
 
         try:
             analyzer = ComplexityAnalyzer()
-            complexity_results = analyzer.analyze_file(self.solution_file)
+            complexity_results = analyzer.analyze_file(solution_path)
 
             if "error" in complexity_results:
                 print_error(
@@ -356,7 +468,7 @@ class LeetCodeTester:
             for method_name, analysis in complexity_results.items():
                 print_complexity_method(method_name, analysis)
 
-            complexity_file = os.path.join(self.problem_dir, "complexity.json")
+            complexity_file = os.path.join(self.problem_dir, f"{language}_complexity.json")
             with open(complexity_file, "w") as f:
                 complexity_data = {
                     "analyzed_at": time.strftime("%Y-%m-%d %H:%M:%S"),

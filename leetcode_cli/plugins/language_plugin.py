@@ -1,46 +1,7 @@
 import os
+from abc import ABC, abstractmethod
 
-# REpLACE THIS WITH THE ACTUAL LANGUAGE-SPECIFIC WRAPPER
-WRAPPER_TEMPLATE = """
-# --- IMPORTS (language-specific) ---
-# import sys
-# import json
-# import time
-# import memory_profiler (or equivalent)
-# from solution import Solution (or language-specific import)
-
-if __name__ == "__main__":
-    # --- PARSE INPUT ARGUMENTS (language-specific) ---
-    # args = [parse_arg(arg) for arg in sys.argv[1:]]
-    # sol = Solution()  # or language-specific instantiation
-
-    # --- START MEMORY PROFILING (language-specific) ---
-    # memory_profiler.start()
-
-    # --- START TIMER (language-specific) ---
-    # t0 = current_time()
-
-    # --- CALL THE FUNCTION/METHOD ---
-    # result = sol.{function_name}(*args)
-
-    # --- END TIMER ---
-    # t1 = current_time()
-
-    # --- END MEMORY PROFILING ---
-    # mem_used = memory_profiler.peak()
-
-    # --- PRINT FUNCTION-ONLY PROFILE INFO ---
-    # print("LEETCODE_PROFILE: " + json.dumps({
-    #     "time_ms": (t1-t0)*1000,
-    #     "mem_bytes": mem_used
-    # }))
-
-    # --- PRINT THE RESULT (as JSON or language-appropriate) ---
-    # print(json.dumps(result))
-"""
-
-
-class LanguagePlugin:
+class LanguagePlugin(ABC):
     """
     Base class for all language plugins.
 
@@ -69,14 +30,6 @@ class LanguagePlugin:
     ensure_image()
         Ensures the Docker image is available (builds it if needed).
         No arguments. No return value.
-
-    _prepare_workspace(workdir, function_name, wrapper_code)
-        Args:
-            workdir (str): Path to the problem directory (workspace).
-            function_name (str): Name of the function/method to call.
-            wrapper_code (str): The wrapper code to write.
-        Returns:
-            str: The path to the wrapper file created in the workspace.
 
     run(workdir, function_name, input_args, input_data=None)
         Runs a single test case.
@@ -114,10 +67,11 @@ class LanguagePlugin:
 
     name = "base"
     docker_image = None
-    dockerfile_path = os.path.join(os.path.dirname(__file__), "dockerfiles", "Dockerfile.language")
-    solution_filename = "solution.txt"  # Override in plugin
+    dockerfile_path = None
+    solution_filename = None
 
     @staticmethod
+    @abstractmethod
     def solution_template(function_name="solve"):
         """
         Return a string with the default solution template for this language.
@@ -128,42 +82,17 @@ class LanguagePlugin:
         Returns:
             str: The code template as a string.
         """
-        raise NotImplementedError
+        pass
 
+    @abstractmethod
     def ensure_image(self):
         """
         Ensure the Docker image for this plugin is available.
         Should build the image if it does not exist.
         """
-        raise NotImplementedError
+        pass
 
-    def _prepare_workspace(self, workdir, function_name, wrapper_code):
-        """
-        Write the wrapper code into the workspace (problem directory).
-        Returns the path to the wrapper file.
-        """
-        wrapper_path = self._prepare_workspace(workdir, function_name, WRAPPER_TEMPLATE.format(function_name=function_name))
-        with open(wrapper_path, "w") as f:
-            f.write(wrapper_code)
-        return wrapper_path
-    
-    def _container_name(self, workdir):
-        """
-        Generate a unique container name for the hot container,
-        based on language, image tag, and problem directory.
-
-        Args:
-            workdir (str): Path to the problem directory.
-
-        Returns:
-            str: Unique container name.
-        """
-        # Use only the image tag (not the full repo) for brevity
-        image_tag = self.docker_image.replace(":", "-").replace("/", "-")
-        problem_id = os.path.basename(os.path.abspath(workdir))
-        return f"leetcode-hot-{self.name}-{image_tag}-{problem_id}"
-
-
+    @abstractmethod
     def run(self, workdir, function_name, input_args, input_data=None):
         """
         Run a single test case.
@@ -184,8 +113,9 @@ class LanguagePlugin:
                 max_rss_kb (int or None): Max memory used (KB), or None.
                 profile_info (dict or None): Function-only profiling info, e.g., {"time_ms": float, "mem_bytes": int}, or None.
         """
-        raise NotImplementedError
+        pass
 
+    @abstractmethod
     def run_many(self, workdir, function_name, input_args_list, input_data_list=None):
         """
         Run multiple test cases efficiently (e.g., in a persistent container).
@@ -199,8 +129,20 @@ class LanguagePlugin:
         Returns:
             list of tuple: Each tuple as described in `run()`.
         """
-        results = []
-        for i, input_args in enumerate(input_args_list):
-            input_data = input_data_list[i] if input_data_list else None
-            results.append(self.run(workdir, function_name, input_args, input_data=input_data))
-        return results
+        pass
+        
+    def _container_name(self, workdir):
+        """
+        Generate a unique container name for the hot container,
+        based on language, image tag, and problem directory.
+
+        Args:
+            workdir (str): Path to the problem directory.
+
+        Returns:
+            str: Unique container name.
+        """
+        image_tag = self.docker_image.replace(":", "-").replace("/", "-")
+        problem_id = os.path.basename(os.path.dirname(os.path.abspath(workdir)))
+        language_dir = os.path.basename(os.path.abspath(workdir))
+        return f"leetcode-hot-{self.name}-{image_tag}-{problem_id}"

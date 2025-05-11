@@ -208,7 +208,7 @@ func toJson(v interface{{}}) string {{
         return wrapper_path
 
     def _container_name(self, workdir):
-        return f"leetcode-hot-go-1.22-{os.path.basename(workdir)}"
+        return super()._container_name(workdir)
 
     def run(self, workdir, function_name, input_args, input_data=None):
         self.ensure_image()
@@ -259,17 +259,17 @@ func toJson(v interface{{}}) string {{
         error_results = []
         for _ in range(num_inputs):
             error_results.append((
-                None,          # result
+                None,
                 error_stdout,
                 error_stderr,
                 error_exit_code,
-                None,          # unused1 (was input_data placeholder)
-                None,          # unused2 (was error_type placeholder)
-                None           # profile_info
+                None,
+                None,
+                None
             ))
         return error_results
 
-    def run_many(self, workdir, function_name, batch_inputs, input_data_list=None): # param input_args_list changed to batch_inputs
+    def run_many(self, workdir, function_name, batch_inputs, input_data_list=None):
         self.ensure_image()
 
         inputs_json_path = os.path.join(workdir, "inputs.json")
@@ -367,9 +367,8 @@ func toJson(v interface{{}}) string {{
             return parsed_results_tuples[:len(batch_inputs)]
 
         finally:
-            # Clean up generated files
             for p in [inputs_json_path, test_driver_code_path, solution_bin_path]:
                 try:
                     if os.path.exists(p): os.remove(p)
                 except OSError:
-                    pass # Ignore cleanup errors
+                    pass

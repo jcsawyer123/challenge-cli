@@ -139,8 +139,7 @@ if __name__ == "__main__":
 """
 
     def _container_name(self, workdir):
-        # Unique container per language and problem directory
-        return f"leetcode-hot-python-3.12-{os.path.basename(workdir)}"
+        return super()._container_name(workdir)
 
     def run(self, workdir, function_name, input_args, input_data=None):
         self.ensure_image()
@@ -283,18 +282,16 @@ if __name__ == "__main__":
                              "", stderr, exit_code, None, None, None)
                         )
 
-
         finally:
-            # Clean up temporary files
             if os.path.exists(inputs_json_path):
                 try:
                     os.remove(inputs_json_path)
                 except Exception:
-                    pass # Log error if needed
+                    pass
             if os.path.exists(driver_code_path):
                 try:
                     os.remove(driver_code_path)
                 except Exception:
-                    pass # Log error if needed
+                    pass
         
         return final_results
