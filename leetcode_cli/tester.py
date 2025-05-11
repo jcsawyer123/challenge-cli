@@ -5,7 +5,7 @@ import traceback
 from typing import Any, Dict, Set
 
 from leetcode_cli.plugins import get_plugin
-from leetcode_cli.utils import format_time
+from leetcode_cli.utils import format_time, format_memory
 from leetcode_cli.analyzer import ComplexityAnalyzer
 from leetcode_cli.output import (
     print_complexity_footer,
@@ -100,7 +100,7 @@ class LeetCodeTester:
                 return False
             if all(isinstance(x, (int, float, str)) for x in result) and \
                all(isinstance(x, (int, float, str)) for x in expected):
-                return sorted(result) == sorted(expected)
+                return sorted(map(str, result)) == sorted(map(str, expected))
             return result == expected
         return result == expected
 
@@ -162,9 +162,13 @@ class LeetCodeTester:
 
 
             if profile_info and "mem_bytes" in profile_info:
-                mem_str = f"{profile_info['mem_bytes']/1024:.2f} KB"
+                mem_bytes = profile_info['mem_bytes']
+                mem_str = format_memory(mem_bytes)
+            elif max_rss_kb is not None:
+                mem_bytes = max_rss_kb * 1024  # Convert KB to Bytes
+                mem_str = format_memory(mem_bytes)
             else:
-                mem_str = f"{max_rss_kb/1024:.2f} MB" if max_rss_kb is not None else "N/A"
+                mem_str = "N/A"
 
 
             if error is None:
@@ -240,9 +244,9 @@ class LeetCodeTester:
                 elif exec_time is not None:
                     times.append(exec_time * 1000)  # convert s to ms
                 if profile_info and "mem_bytes" in profile_info:
-                    mems.append(profile_info["mem_bytes"] / 1024)  # bytes to KB
+                    mems.append(profile_info["mem_bytes"])  # Already in bytes
                 elif max_rss_kb is not None:
-                    mems.append(max_rss_kb)
+                    mems.append(max_rss_kb * 1024)  # Convert KB to bytes
 
             if error is not None:
                 print_error(
@@ -264,11 +268,14 @@ class LeetCodeTester:
                 avg_time = min_time = max_time = None
 
             if mems:
-                avg_mem = sum(mems) / len(mems)
-                min_mem = min(mems)
-                max_mem = max(mems)
+                avg_mem_bytes = sum(mems) / len(mems)
+                min_mem_bytes = min(mems)
+                max_mem_bytes = max(mems)
             else:
-                avg_mem = min_mem = max_mem = None
+                avg_mem_bytes = min_mem_bytes = max_mem_bytes = None
+
+            avg_mem_str = format_memory(int(avg_mem_bytes)) if avg_mem_bytes is not None else "N/A"
+            max_mem_str = format_memory(int(max_mem_bytes)) if max_mem_bytes is not None else "N/A"
 
             print_profile_result(
                 case_num=case_num,
@@ -276,8 +283,8 @@ class LeetCodeTester:
                 avg_time=format_time(avg_time / 1000) if avg_time is not None else "N/A",
                 min_time=format_time(min_time / 1000) if min_time is not None else "N/A",
                 max_time=format_time(max_time / 1000) if max_time is not None else "N/A",
-                avg_mem_kb=f"{avg_mem:.2f} KB" if avg_mem is not None else "N/A",
-                max_peak_mem=f"{max_mem:.2f} KB" if max_mem is not None else "N/A",
+                avg_mem_kb=avg_mem_str,
+                max_peak_mem=max_mem_str,
                 profile_stdout=extra_stdout if extra_stdout else ""
             )
 

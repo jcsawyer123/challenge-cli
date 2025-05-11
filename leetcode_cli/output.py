@@ -70,13 +70,13 @@ def print_profile_result(
     avg_time,
     min_time,
     max_time,
-    avg_mem_kb,
-    max_peak_mem,
+    avg_mem_str,
+    max_peak_mem_str,
     profile_stdout
 ):
     print(f"{WARNING}Test Case {case_num}:{RESET} {BOLD}{INFO}{iterations} iterations{RESET}")
     print(f"  Time: avg={avg_time}, min={min_time}, max={max_time}")
-    print(f"  Memory: avg mem={avg_mem_kb}, max peak={max_peak_mem}")
+    print(f"  Memory: avg mem={avg_mem_str}, max peak={max_peak_mem_str}")
     if profile_stdout:
         print(f"  {STDOUT}Stdout sample:{RESET}")
         lines = profile_stdout.splitlines()

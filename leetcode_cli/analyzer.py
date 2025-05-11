@@ -66,8 +66,7 @@ class ComplexityAnalyzer:
         """Count loops and their nesting levels."""
         result = {
             "loops": 0,
-            "max_nesting": 0,
-            "nested_loops": []
+            "max_nesting": 0
         }
         
         def visit_node(node, depth=0):
@@ -78,9 +77,6 @@ class ComplexityAnalyzer:
                 current_depth = depth + 1
                 result["max_nesting"] = max(result["max_nesting"], current_depth)
                 
-                # If this is a nested loop, record it
-                if depth > 0:
-                    result["nested_loops"].append(current_depth)
             
             # Visit all child nodes
             for child in self.ast.iter_child_nodes(node):
