@@ -40,6 +40,7 @@ from challenge_cli.output import (
     print_visualization_generated,
     get_progress_context,
     console,
+    print_banner
 )
 
 # Use Rich components for better display
@@ -396,11 +397,14 @@ class ChallengeTester:
         case_num: int,
         input_values: List[Any],
         expected: Any,
-        history_manager: Optional[HistoryManager],
+        history_manager: Optional[Any],
         snapshot_id: Optional[str],
         detailed: bool
     ) -> Dict[str, Any]:
-        """Processes a single test case result, prints output, and records history."""
+        """
+        Processes a single test case result and returns a result record.
+        Does NOT print anything.
+        """
         result, extra_stdout, stderr, exit_code, exec_time, max_rss_kb, profile_info = result_data
         error = None if exit_code == 0 else stderr
         passed = False
@@ -410,21 +414,14 @@ class ChallengeTester:
         # --- Determine Time ---
         if profile_info and "time_ms" in profile_info:
             time_ms = profile_info['time_ms']
-            time_str = format_time(time_ms / 1000)
-        else:
-            time_str = format_time(exec_time) if exec_time is not None else "N/A"
-            if exec_time is not None:
-                 time_ms = exec_time * 1000 # Approximate if only exec_time available
+        elif exec_time is not None:
+            time_ms = exec_time * 1000  # Approximate if only exec_time available
 
         # --- Determine Memory ---
         if profile_info and "mem_bytes" in profile_info:
             mem_bytes = profile_info['mem_bytes']
-            mem_str = format_memory(mem_bytes)
         elif max_rss_kb is not None:
             mem_bytes = max_rss_kb * 1024
-            mem_str = format_memory(mem_bytes)
-        else:
-            mem_str = "N/A"
 
         # --- Prepare Result Record ---
         test_result_record = {
@@ -435,33 +432,17 @@ class ChallengeTester:
             "mem_bytes": mem_bytes,
             "result": result,
             "expected": expected,
-            "error_message": error if error else None
+            "error_message": error if error else None,
+            "traceback_str": stderr if error else None,
+            "stdout": extra_stdout if extra_stdout else None,
+            "input_values": input_values,
         }
 
-        # --- Print Output ---
+        # --- Determine Pass/Fail ---
         if error is None:
             # Use utility function for comparison
             passed = compare_results(result, expected)
             test_result_record["passed"] = passed
-            print_test_case_result(
-                case_num=case_num,
-                passed=passed,
-                exec_time=time_str,
-                memory=mem_str,
-                result=result,
-                expected=expected,
-                stdout=extra_stdout if extra_stdout else None,
-                input_values=input_values if detailed else None,
-                detailed=detailed
-            )
-        else:
-            print_error(
-                case_num=case_num,
-                error_msg=error,
-                stdout=extra_stdout if extra_stdout else None,
-                detailed=detailed,
-                traceback_str=stderr if detailed else None
-            )
 
         # --- Record Performance History ---
         if self.use_history and history_manager and not error and time_ms is not None:
@@ -474,12 +455,10 @@ class ChallengeTester:
                     },
                     snapshot_id=snapshot_id
                 )
-            except Exception as e:
-                if detailed:
-                    print_warning(f"Failed to record performance for case {case_num}: {e}")
-        
-        return test_result_record
+            except Exception:
+                pass  # Don't print here
 
+        return test_result_record
 
     def run_tests(
         self,
@@ -490,6 +469,48 @@ class ChallengeTester:
         snapshot_tag: Optional[str] = None
     ) -> None:
         """Runs test cases against the specified language implementation."""
+
+        def print_detailed_results(results):
+            for result in results:
+                print_test_case_result(
+                    case_num=result["case_num"],
+                    passed=result["passed"],
+                    exec_time=format_time(result["exec_time_ms"] / 1000) if result["exec_time_ms"] else "N/A",
+                    memory=format_memory(result["mem_bytes"]) if result["mem_bytes"] else "N/A",
+                    result=result["result"],
+                    expected=result["expected"],
+                    stdout=result.get("stdout", None),
+                    input_values=result.get("input_values", None),
+                    detailed=True
+                )
+
+        def print_errors(results):
+            for result in results:
+                if result.get("error", False):
+                    print_error(
+                        case_num=result["case_num"],
+                        error_msg=result.get("error_message", "Unknown error"),
+                        stdout=result.get("stdout", None),
+                        detailed=True,
+                        traceback_str=result.get("traceback_str", None)
+                    )
+
+        def print_failed(results):
+            for result in results:
+                if not result["passed"] and not result.get("error", False):
+                    print_test_case_result(
+                        case_num=result["case_num"],
+                        passed=result["passed"],
+                        exec_time=format_time(result["exec_time_ms"] / 1000) if result["exec_time_ms"] else "N/A",
+                        memory=format_memory(result["mem_bytes"]) if result["mem_bytes"] else "N/A",
+                        result=result["result"],
+                        expected=result["expected"],
+                        stdout=result.get("stdout", None),
+                        input_values=result.get("input_values", None),
+                        detailed=True
+                    )
+
+        # --- Prepare context and test cases ---
         try:
             context = self._prepare_execution_context(language)
             lang = context["language"]
@@ -497,10 +518,9 @@ class ChallengeTester:
             testcases_data = context["testcases"]
             function_name = context["function_name"]
             history_manager = context["history_manager"]
-            
+
             testcase_list = testcases_data["testcases"]
             selected_cases = parse_cases_arg(cases_arg, len(testcase_list))
-            
         except (ValueError, FileNotFoundError, Exception) as e:
             print_error(
                 case_num="N/A",
@@ -510,56 +530,55 @@ class ChallengeTester:
             )
             return
 
-        print_warning(f"Testing {lang} function: {function_name} ({self.platform}/{self.challenge_path})")
+        print_warning(
+            f"Testing {lang} function: {function_name} "
+            f"({self.platform}/{self.challenge_path})"
+        )
 
         snapshot_id = self._create_snapshot_if_enabled(
             history_manager, lang, function_name, snapshot_tag, snapshot_comment, detailed
         )
 
-        # Prepare batch
-        batch_inputs = []
-        batch_expected = []
-        batch_case_nums = []
+        # --- Prepare batch inputs ---
+        batch_inputs, batch_expected, batch_case_nums = [], [], []
         for i, testcase in enumerate(testcase_list):
             case_num = i + 1
-            if case_num not in selected_cases:
-                continue
-            batch_inputs.append(testcase["input"])
-            batch_expected.append(testcase["output"])
-            batch_case_nums.append(case_num)
+            if case_num in selected_cases:
+                batch_inputs.append(testcase["input"])
+                batch_expected.append(testcase["output"])
+                batch_case_nums.append(case_num)
 
         if not batch_inputs:
-             print_warning("No test cases selected or found.")
-             print_summary(0, 0, 0, len(testcase_list))
-             return
+            print_warning("No test cases selected or found.")
+            print_summary(0, 0, 0, len(testcase_list))
+            return
 
         language_dir = self._get_language_dir(lang)
         total_passed = 0
         all_test_results_records = []
-        total_time = 0
 
-        # Execute tests
+        # --- Execute tests ---
         with get_progress_context("Running tests...") as progress:
-            task = progress.add_task(f"Testing {len(batch_inputs)} cases...", total=len(batch_inputs))
-            
+            task = progress.add_task(
+                f"Testing {len(batch_inputs)} cases...", total=len(batch_inputs)
+            )
             start_time = time.time()
             try:
                 results = plugin.run_many(language_dir, function_name, batch_inputs)
             except Exception as e:
-                 print_error(
+                print_error(
                     case_num="Batch",
                     error_msg=f"Error during batch execution: {e}",
                     detailed=True,
                     traceback_str=traceback.format_exc() if detailed else None
-                 )
-                 return # Cannot proceed if batch execution failed
+                )
+                return
             total_time = time.time() - start_time
-            
+
             # Process results
             for idx, result_data in enumerate(results):
                 progress.update(task, advance=1)
                 case_num = batch_case_nums[idx]
-                
                 test_result_record = self._process_test_result(
                     result_data=result_data,
                     case_num=case_num,
@@ -567,13 +586,13 @@ class ChallengeTester:
                     expected=batch_expected[idx],
                     history_manager=history_manager,
                     snapshot_id=snapshot_id,
-                    detailed=detailed
+                    detailed=False
                 )
                 all_test_results_records.append(test_result_record)
                 if test_result_record["passed"]:
                     total_passed += 1
 
-        # Record overall test results in history
+        # --- Record results in history ---
         if self.use_history and history_manager:
             try:
                 history_manager.add_test_results(
@@ -585,7 +604,23 @@ class ChallengeTester:
             except Exception as e:
                 print_warning(f"Failed to record overall test results: {e}")
 
-        print_summary(total_passed, len(batch_case_nums), len(selected_cases), len(testcase_list))
+        # --- Print summary table ---
+        from challenge_cli.output import print_test_summary_table
+        print_test_summary_table(all_test_results_records)
+
+        # --- Print detailed or error/failure results ---
+        if detailed:
+            print_detailed_results(all_test_results_records)
+        else:
+            print_errors(all_test_results_records)
+            print_failed(all_test_results_records)
+
+        # --- Print summary panel with emoji ---
+        print_summary(
+            total_passed, len(batch_case_nums), len(selected_cases), len(testcase_list)
+        )
+        if total_passed == len(batch_case_nums):
+            print_success("All test cases passed! 🎉")
         if detailed:
             print_info(f"Total batch execution time: {format_time(total_time)}")
 

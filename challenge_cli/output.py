@@ -223,23 +223,23 @@ def print_test_error(
         error_content.append(f"\n\nat line {lineno}: ", style=YELLOW_STYLE)
         error_content.append(line_content, style=WHITE_STYLE)
 
-    # Main error panel
+    # Only show traceback if it's present and different from error_msg
+    show_traceback = (
+        detailed and traceback_str and traceback_str.strip() and
+        traceback_str.strip() != error_msg.strip()
+    )
+    if show_traceback:
+        syntax = Syntax(traceback_str, "python", theme="monokai", line_numbers=True, word_wrap=True)
+        content = Group(error_content, syntax)
+    else:
+        content = error_content
+
     console.print(_create_panel(
-        error_content,
+        content,
         title="[red]Error[/red]",
         border_style=FAIL_STYLE,
         padding=(1, 2)
     ))
-
-    # Traceback panel (scrollable if long)
-    if detailed and traceback_str:
-        syntax = Syntax(traceback_str, "python", theme="monokai", line_numbers=True, word_wrap=True)
-        console.print(_create_panel(
-            syntax,
-            title="[red]Traceback[/red]",
-            border_style=FAIL_STYLE,
-            padding=(1, 2)
-        ))
 
     # Stdout panel
     if stdout:
@@ -291,6 +291,30 @@ def print_summary(total_passed: int, total_run: int, selected: int, total: int):
         padding=(1, 2)
     )
     console.print(panel)
+
+def print_test_summary_table(test_results: List[Dict[str, Any]]):
+    table = Table(title="[bold]Test Results Summary[/bold]", box=ROUNDED)
+    table.add_column("Case", style="cyan", width=8)
+    table.add_column("Status", style="bold", width=10)
+    table.add_column("Time", style="green", width=10)
+    table.add_column("Memory", style="blue", width=10)
+
+    for result in test_results:
+        status = (
+            "[green]✓ PASSED[/green]" if result["passed"]
+            else "[red]✗ FAILED[/red]" if not result.get("error", False)
+            else "[red]✗ ERROR[/red]"
+        )
+        time_str = format_time(result["exec_time_ms"] / 1000) if result["exec_time_ms"] else "N/A"
+        mem_str = format_memory(result["mem_bytes"]) if result["mem_bytes"] else "N/A"
+        table.add_row(
+            str(result["case_num"]),
+            status,
+            time_str,
+            mem_str
+        )
+    console.print(table)
+
 
 # ==============================================================================
 # Profiling Output

@@ -56,13 +56,14 @@ if __name__ == "__main__":
 """
     
     def generate_test_driver_template(self, function_name: str) -> str:
-        """Generate Python test driver for batch execution."""
         solution_module = self.solution_filename.split('.')[0]
         return f"""
 import sys
 import json
 import time
 import tracemalloc
+import io
+import contextlib
 from {solution_module} import Solution
 
 if __name__ == "__main__":
@@ -81,34 +82,41 @@ if __name__ == "__main__":
     results_output = []
 
     for i, args_for_call in enumerate(batch_inputs):
-        case_stdout_lines = []
+        case_stdout = io.StringIO()
         try:
             tracemalloc.start()
             t0 = time.perf_counter()
-            
-            result = sol.{function_name}(*args_for_call)
-            
+            with contextlib.redirect_stdout(case_stdout):
+                result = sol.{function_name}(*args_for_call)
             t1 = time.perf_counter()
             current, peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
 
-            case_stdout_lines.append(json.dumps(result))
-            case_stdout_lines.append(f"PROFILE_TIME_MS: {{(t1 - t0) * 1000}}")
-            case_stdout_lines.append(f"PROFILE_MEM_BYTES: {{peak}}")
-
+            # Compose output for this case
+            case_result = {{
+                "result": result,
+                "stdout": case_stdout.getvalue(),
+                "time_ms": (t1 - t0) * 1000,
+                "mem_bytes": peak,
+                "error": None
+            }}
         except Exception as call_e:
             if tracemalloc.is_tracing():
                 tracemalloc.stop()
+            case_result = {{
+                "result": "ERROR_RESULT",
+                "stdout": case_stdout.getvalue(),
+                "time_ms": 0,
+                "mem_bytes": 0,
+                "error": str(call_e)
+            }}
             print(f"{self.FUNCTION_ERROR_MARKER} Test case {{i}}: {{call_e}}", file=sys.stderr)
-            case_stdout_lines.append(json.dumps("ERROR_RESULT"))
-            case_stdout_lines.append(f"PROFILE_TIME_MS: 0")
-            case_stdout_lines.append(f"PROFILE_MEM_BYTES: 0")
-        
-        results_output.append("\\n".join(case_stdout_lines))
+        results_output.append(json.dumps(case_result))
 
-    print(f"\\n{self.SEPARATOR}\\n".join(results_output))
+    print("\\n{self.SEPARATOR}\\n".join(results_output))
     print("{self.END_OUTPUT}")
 """
+
     
     def run(self, workdir: str, function_name: str, input_args: list, input_data: str = None) -> tuple:
         """Run a single test case."""
@@ -200,51 +208,41 @@ if __name__ == "__main__":
         return result, extra_stdout_str, profile_info
     
     def _parse_single_case_output(self, case_output: str, stderr: str, exit_code: int, case_index: int) -> tuple:
-        """Parse output for a single test case in batch execution."""
-        lines = case_output.splitlines()
-        if not lines:
-            return ("Malformed case output", "", "Empty output for case", 1, None, None, None)
-        
-        parsed_result = "Error: Malformed case output"
-        profile_info = None
-        case_specific_stderr = ""
-        case_exit_code = 1
-        
         try:
-            # Parse result
-            if lines[0] in ['""ERROR_RESULT""', '"ERROR_RESULT"']:
-                parsed_result = "Error in user function"
-                case_exit_code = 1
-                # Extract error message from stderr if available
+            data = json.loads(case_output)
+            parsed_result = data.get("result")
+            case_stdout = data.get("stdout", "")
+            time_ms = data.get("time_ms", 0)
+            mem_bytes = data.get("mem_bytes", 0)
+            profile_info = {"time_ms": time_ms, "mem_bytes": mem_bytes}
+            error = data.get("error")
+            case_specific_stderr = ""
+            case_exit_code = 1 if error else 0
+            if error:
+                # Try to extract error marker from stderr
                 stderr_lines = stderr.strip().splitlines()
                 for err_line in stderr_lines:
                     if err_line.startswith(self.FUNCTION_ERROR_MARKER) and f"Test case {case_index}" in err_line:
                         case_specific_stderr = err_line
                         break
                 if not case_specific_stderr:
-                    case_specific_stderr = stderr
-            else:
-                parsed_result = json.loads(lines[0])
-                case_exit_code = 0
-            
-            # Parse timing info
-            if len(lines) > 1 and lines[1].startswith("PROFILE_TIME_MS:"):
-                time_ms = float(lines[1].split(":", 1)[1].strip())
-            else:
-                time_ms = 0
-            
-            # Parse memory info
-            if len(lines) > 2 and lines[2].startswith("PROFILE_MEM_BYTES:"):
-                mem_bytes = int(lines[2].split(":", 1)[1].strip())
-            else:
-                mem_bytes = 0
-            
-            profile_info = {"time_ms": time_ms, "mem_bytes": mem_bytes}
-            
+                    case_specific_stderr = error
+            return (
+                parsed_result,
+                case_stdout,
+                case_specific_stderr,
+                case_exit_code,
+                None,
+                None,
+                profile_info
+            )
         except Exception as e:
-            parsed_result = f"Error parsing case output: {str(e)}"
-            case_specific_stderr = f"Original case output:\n{case_output}\nStderr:\n{stderr}"
-            case_exit_code = 1
-            profile_info = None
-        
-        return (parsed_result, "", case_specific_stderr, case_exit_code, None, None, profile_info)
+            return (
+                None,
+                "",
+                f"Failed to parse output for case {case_index}: {e}",
+                1,
+                None,
+                None,
+                None
+            )
