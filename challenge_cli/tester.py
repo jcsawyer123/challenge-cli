@@ -7,7 +7,16 @@ import datetime
 from typing import Any, Dict, Set, List, Optional
 
 from challenge_cli.plugins import get_plugin
-from challenge_cli.utils import format_time, format_memory
+# Import the consolidated utils
+from challenge_cli.utils import (
+    format_time,
+    format_memory,
+    parse_cases_arg,
+    compare_results,
+    parse_result,
+    load_json, # May need this if loading complexity.json directly
+    save_json, # May need this if saving complexity.json directly
+)
 from challenge_cli.analyzer import ComplexityAnalyzer
 from challenge_cli.history_manager import HistoryManager
 from challenge_cli.visualization import HistoryVisualizer
@@ -82,8 +91,10 @@ class ChallengeTester:
         
         # Full path: problems_dir/platform/challenge_path
         self.challenge_dir = os.path.join(self.problems_dir, self.platform, self.challenge_path)
+        # Ensure the base challenge directory exists before further operations (like HistoryManager init)
+        os.makedirs(self.challenge_dir, exist_ok=True)
         self.testcases_file = os.path.join(self.challenge_dir, "testcases.json")
-        
+
         # Initialize history manager if history is enabled
         self.history_manager = None
         if self.use_history and self.language:
@@ -146,17 +157,97 @@ class ChallengeTester:
         
         return self.history_manager
 
+    def _initialize_or_update_testcases_file(self, language: str, function_name: str) -> None:
+        """
+        Initializes or updates the testcases.json file for the challenge.
+        Handles creation, adding/updating language implementations, and
+        converting from the old single-language format if necessary.
+        """
+        testcases_updated = False
+        if os.path.exists(self.testcases_file):
+            try:
+                with open(self.testcases_file, "r") as f:
+                    testcases = json.load(f)
+                
+                # Check for old format (single language/function at top level)
+                if "language" in testcases and "function" in testcases:
+                    old_language = testcases["language"]
+                    old_function = testcases["function"]
+                    old_testcases_list = testcases.get("testcases", []) # Get existing testcases
+                    
+                    # Prepare new structure
+                    new_testcases_data = {
+                        "testcases": old_testcases_list,
+                        "implementations": {
+                            old_language: {"function": old_function},
+                            # Add the new language being initialized
+                            language: {"function": function_name}
+                        }
+                    }
+                    
+                    # Attempt to move the old solution file if language is changing
+                    # Note: This relies on the plugin for the *new* language being passed in
+                    # This might be fragile if init_problem is called without a valid plugin for the *old* language
+                    if old_language != language:
+                         try:
+                             old_plugin = get_plugin(old_language)
+                             if old_plugin:
+                                 old_solution_path_in_root = os.path.join(self.challenge_dir, old_plugin.solution_filename)
+                                 if os.path.exists(old_solution_path_in_root):
+                                     old_language_dir = self._get_language_dir(old_language)
+                                     os.makedirs(old_language_dir, exist_ok=True)
+                                     new_location_for_old_solution = os.path.join(old_language_dir, old_plugin.solution_filename)
+                                     if not os.path.exists(new_location_for_old_solution):
+                                         os.rename(old_solution_path_in_root, new_location_for_old_solution)
+                                         print_info(f"Moved existing {old_language} solution to its language directory.")
+                         except Exception as move_err:
+                              print_warning(f"Could not move old solution file for {old_language}: {move_err}")
+
+                    testcases = new_testcases_data # Overwrite with new structure
+                    print_info("Converted testcases.json from old format.")
+
+                else:
+                    # Already in new format (or empty/invalid), just add/update implementation
+                    implementations = testcases.get("implementations", {})
+                    implementations[language] = {"function": function_name}
+                    testcases["implementations"] = implementations
+                
+                # Write the updated data back to the file
+                with open(self.testcases_file, "w") as f:
+                    json.dump(testcases, f, indent=2)
+                testcases_updated = True
+
+            except json.JSONDecodeError:
+                print_warning(f"Existing '{self.testcases_file}' is invalid JSON. Overwriting.")
+                # Fall through to create a new file below
+            except Exception as e:
+                 print_warning(f"Error processing existing testcases file: {e}. Will attempt to create anew.")
+                 # Fall through
+
+        if not testcases_updated:
+            # Create a new testcases.json file from the template
+            try:
+                with open(self.testcases_file, "w") as f:
+                    # Ensure the template uses the correct language and function name
+                    f.write(TESTCASES_TEMPLATE % (language, function_name))
+                print_info(f"Created new testcases file: {self.testcases_file}")
+            except IOError as e:
+                 print_error("N/A", f"Failed to write initial testcases file: {e}", detailed=True)
+                 # This is a more critical error, maybe raise? For now, just print.
+
+
     def init_problem(self, language="python", function_name="solve") -> None:
-        # Create challenge directory structure
-        os.makedirs(self.challenge_dir, exist_ok=True)
+        """Initializes the directory structure and necessary files for a new challenge."""
+        # Base challenge directory is now created in __init__
         
-        plugin = get_plugin(language)
-        if not plugin:
-            print_error(
-                case_num="N/A",
-                error_msg=f"No plugin found for language '{language}'",
-                detailed=True
-            )
+        try:
+            plugin = get_plugin(language)
+        except ValueError as e: # Catch specific error from get_plugin
+             print_error("N/A", str(e), detailed=True)
+             return
+             
+        if not plugin: # Should be caught by ValueError, but double-check
+            print_error("N/A", f"No plugin found for language '{language}'", detailed=True)
             return
         
         language_dir = self._get_language_dir(language)
@@ -165,173 +256,254 @@ class ChallengeTester:
         solution_path = os.path.join(language_dir, plugin.solution_filename)
         solution_already_exists = os.path.exists(solution_path)
         
-        with open(solution_path, "w") as f:
-            f.write(plugin.solution_template(function_name=function_name))
+        # Write solution template
+        try:
+            with open(solution_path, "w") as f:
+                f.write(plugin.solution_template(function_name=function_name))
+        except IOError as e:
+             print_error("N/A", f"Failed to write solution template: {e}", detailed=True)
+             return # Cannot proceed without solution file
+
+        # Initialize or update testcases file using the helper
+        self._initialize_or_update_testcases_file(language, function_name)
         
-        testcases_updated = False
-        
-        if os.path.exists(self.testcases_file):
-            try:
-                with open(self.testcases_file, "r") as f:
-                    testcases = json.load(f)
-                
-                if "language" in testcases and "function" in testcases:
-                    # Convert old format to new format
-                    old_language = testcases["language"]
-                    old_function = testcases["function"]
-                    old_testcases = testcases["testcases"]
-                    
-                    # If changing languages, move old solution file to language subdirectory
-                    if old_language != language and os.path.exists(os.path.join(self.challenge_dir, plugin.solution_filename)):
-                        old_plugin = get_plugin(old_language)
-                        if old_plugin:
-                            old_solution_path = os.path.join(self.challenge_dir, old_plugin.solution_filename)
-                            old_language_dir = self._get_language_dir(old_language)
-                            os.makedirs(old_language_dir, exist_ok=True)
-                            new_old_solution_path = os.path.join(old_language_dir, old_plugin.solution_filename)
-                            if os.path.exists(old_solution_path) and not os.path.exists(new_old_solution_path):
-                                os.rename(old_solution_path, new_old_solution_path)
-                    
-                    testcases = {
-                        "testcases": old_testcases,
-                        "implementations": {
-                            old_language: {"function": old_function},
-                            language: {"function": function_name}
-                        }
-                    }
-                else:
-                    # Already in new format
-                    implementations = testcases.get("implementations", {})
-                    implementations[language] = {"function": function_name}
-                    testcases["implementations"] = implementations
-                
-                with open(self.testcases_file, "w") as f:
-                    json.dump(testcases, f, indent=2)
-                
-                testcases_updated = True
-            except json.JSONDecodeError:
-                # If testcases.json exists but is invalid, create a new one
-                pass
-        
-        if not testcases_updated:
-            # Create new testcases.json with language implementation
-            with open(self.testcases_file, "w") as f:
-                f.write(TESTCASES_TEMPLATE % (language, function_name))
-        
-        complexity_file = os.path.join(self.challenge_dir, "complexity.json")
+        # Initialize complexity file (simple creation if not exists)
+        complexity_file = os.path.join(self.challenge_dir, "complexity.json") # Keep generic name for now
         if not os.path.exists(complexity_file):
             with open(complexity_file, "w") as f:
                 f.write(COMPLEXITY_TEMPLATE)
         
-        # Initialize history tracking
-        if self.use_history:
-            self._initialize_history_manager(language)
-            # Create initial snapshot with "initial" tag
+        if not os.path.exists(complexity_file):
             try:
-                solution_path = self.get_solution_path(language)
-                if os.path.exists(solution_path):
-                    self.history_manager.create_snapshot(
-                        solution_file=solution_path,
-                        function_name=function_name,
-                        tag="initial",
-                        comment="Initial solution template"
-                    )
-                    print_info("Created initial snapshot in history")
-            except Exception as e:
-                print_warning(f"Failed to create initial snapshot: {e}")
+                with open(complexity_file, "w") as f:
+                    f.write(COMPLEXITY_TEMPLATE)
+            except IOError as e:
+                 print_warning(f"Failed to write complexity file: {e}") # Less critical, maybe just warn
+
+        # Initialize history tracking and create initial snapshot
+        history_manager = self._initialize_history_manager(language)
+        if self.use_history and history_manager:
+            # Use the helper for snapshot creation
+            self._create_snapshot_if_enabled(
+                history_manager=history_manager,
+                language=language,
+                function_name=function_name,
+                tag="initial",
+                comment="Initial solution template",
+                detailed=False # Don't need detailed output for initial snapshot
+            )
+            # Note: _create_snapshot_if_enabled handles print_info/print_warning internally
         
+        # Final success messages
         if solution_already_exists:
-            print_success(f"Updated {language} implementation for {self.platform} challenge: {self.challenge_path}")
+            print_success(f"Updated {language} implementation for {self.platform}/{self.challenge_path}")
         else:
-            print_success(f"Added {language} implementation for {self.platform} challenge: {self.challenge_path}")
+            print_success(f"Added {language} implementation for {self.platform}/{self.challenge_path}")
         
-        print_info(f"Please edit {solution_path} with your solution.")
-        print_info(f"And update {self.testcases_file} with your test cases.")
+        print_info(f"-> Solution file: {solution_path}")
+        print_info(f"-> Test cases file: {self.testcases_file}")
 
     def load_testcases(self) -> Dict:
         if not os.path.exists(self.testcases_file):
             raise FileNotFoundError(f"Test cases file not found: {self.testcases_file}")
         with open(self.testcases_file, "r") as f:
-            return json.load(f)
-    
-    def _parse_cases_arg(self, cases_arg: str, total_cases: int) -> Set[int]:
-        if not cases_arg:
-            return set(range(1, total_cases + 1))
-        selected_cases = set()
-        parts = cases_arg.split(',')
-        for part in parts:
-            if '-' in part:
-                start, end = map(int, part.split('-'))
-                selected_cases.update(range(start, end + 1))
-            else:
-                selected_cases.add(int(part))
-        return {case for case in selected_cases if 1 <= case <= total_cases}
+            # Use the utility function for loading JSON
+            return load_json(self.testcases_file)
 
-    def _compare_results(self, result: Any, expected: Any) -> bool:
-        if isinstance(expected, str):
+    # _parse_cases_arg, _compare_results, _parse_result removed. Using versions from utils.py
+
+    def _prepare_execution_context(self, language: Optional[str]) -> Dict[str, Any]:
+        """
+        Prepares the context needed for running tests, profiling, or analysis.
+
+        Handles language inference, plugin loading, testcase loading,
+        function name retrieval, and history manager initialization.
+
+        Returns:
+            A dictionary containing: 'language', 'plugin', 'testcases',
+            'function_name', 'history_manager'.
+        Raises:
+            ValueError: If language cannot be determined or plugin is not found.
+            FileNotFoundError: If testcases.json is missing.
+            Exception: For other errors during loading or initialization.
+        """
+        resolved_language = language or self.language
+        if not resolved_language:
             try:
-                expected = json.loads(expected)
-            except json.JSONDecodeError:
-                pass
-        if isinstance(result, list) and isinstance(expected, list):
-            if len(result) != len(expected):
-                return False
-            if all(isinstance(x, (int, float, str)) for x in result) and \
-               all(isinstance(x, (int, float, str)) for x in expected):
-                return sorted(map(str, result)) == sorted(map(str, expected))
-            return result == expected
-        return result == expected
-
-    def _parse_result(self, stdout):
-        try:
-            return json.loads(stdout.strip())
-        except Exception:
-            return stdout.strip()
-
-    def run_tests(
-        self, 
-        language=None, 
-        detailed: bool = False, 
-        cases_arg: str = None,
-        snapshot_comment: str = None,
-        snapshot_tag: str = None
-    ) -> None:
-        language = language or self.language
-        if not language:
-            try:
-                testcases = self.load_testcases()
-                if "language" in testcases:
-                    language = testcases["language"]
-                elif "implementations" in testcases and testcases["implementations"]:
-                    language = next(iter(testcases["implementations"].keys()))
+                testcases_data = self.load_testcases()
+                if "language" in testcases_data: # Check old format first
+                    resolved_language = testcases_data["language"]
+                elif "implementations" in testcases_data and testcases_data["implementations"]:
+                    resolved_language = next(iter(testcases_data["implementations"].keys()))
                 else:
                     raise ValueError("No language specified and could not infer from testcases.json")
             except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
-                print_error(
-                    case_num="N/A",
-                    error_msg=f"No language specified and could not infer: {str(e)}",
-                    detailed=True
-                )
-                return
-        
-        # Update history manager for this language
-        history_manager = self._initialize_history_manager(language)
-        
-        plugin = get_plugin(language)
+                raise ValueError(f"No language specified and could not infer: {str(e)}") from e
+
+        plugin = get_plugin(resolved_language)
         if not plugin:
-            print_error(
-                case_num="N/A",
-                error_msg=f"No plugin found for language: {language}",
-                detailed=True
-            )
-            return
+            raise ValueError(f"No plugin found for language: {resolved_language}")
+
+        history_manager = self._initialize_history_manager(resolved_language)
         
+        # Load testcases and function name after resolving language and plugin
         try:
-            testcases = self.load_testcases()
-            function_name = self.get_function_name(language)
-            testcase_list = testcases["testcases"]
-            selected_cases = self._parse_cases_arg(cases_arg, len(testcase_list))
-        except Exception as e:
+            testcases_data = self.load_testcases()
+            function_name = self.get_function_name(resolved_language) # Use resolved language
+        except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
+            # Wrap potential errors from load_testcases/get_function_name
+            raise Exception(f"Error loading test context for {resolved_language}: {str(e)}") from e
+            
+        return {
+            "language": resolved_language,
+            "plugin": plugin,
+            "testcases": testcases_data,
+            "function_name": function_name,
+            "history_manager": history_manager,
+        }
+
+    def _create_snapshot_if_enabled(
+        self,
+        history_manager: Optional[HistoryManager],
+        language: str,
+        function_name: str,
+        tag: Optional[str],
+        comment: Optional[str],
+        detailed: bool
+    ) -> Optional[str]:
+        """Creates a history snapshot if history is enabled."""
+        snapshot_id = None
+        if self.use_history and history_manager:
+            try:
+                solution_path = self.get_solution_path(language)
+                if os.path.exists(solution_path):
+                    snapshot_id = history_manager.create_snapshot(
+                        solution_file_path=solution_path,
+                        function_name=function_name,
+                        tag=tag or "test", # Default tag for tests
+                        comment=comment
+                    )
+                    if detailed:
+                        print_info(f"Created snapshot: {snapshot_id}")
+                else:
+                    if detailed:
+                         print_warning(f"Solution file not found, skipping snapshot: {solution_path}")
+            except Exception as e:
+                print_warning(f"Failed to create history snapshot: {e}")
+        return snapshot_id
+
+    def _process_test_result(
+        self,
+        result_data: tuple,
+        case_num: int,
+        input_values: List[Any],
+        expected: Any,
+        history_manager: Optional[HistoryManager],
+        snapshot_id: Optional[str],
+        detailed: bool
+    ) -> Dict[str, Any]:
+        """Processes a single test case result, prints output, and records history."""
+        result, extra_stdout, stderr, exit_code, exec_time, max_rss_kb, profile_info = result_data
+        error = None if exit_code == 0 else stderr
+        passed = False
+        time_ms = None
+        mem_bytes = None
+
+        # --- Determine Time ---
+        if profile_info and "time_ms" in profile_info:
+            time_ms = profile_info['time_ms']
+            time_str = format_time(time_ms / 1000)
+        else:
+            time_str = format_time(exec_time) if exec_time is not None else "N/A"
+            if exec_time is not None:
+                 time_ms = exec_time * 1000 # Approximate if only exec_time available
+
+        # --- Determine Memory ---
+        if profile_info and "mem_bytes" in profile_info:
+            mem_bytes = profile_info['mem_bytes']
+            mem_str = format_memory(mem_bytes)
+        elif max_rss_kb is not None:
+            mem_bytes = max_rss_kb * 1024
+            mem_str = format_memory(mem_bytes)
+        else:
+            mem_str = "N/A"
+
+        # --- Prepare Result Record ---
+        test_result_record = {
+            "case_num": case_num,
+            "passed": False,
+            "error": bool(error),
+            "exec_time_ms": time_ms,
+            "mem_bytes": mem_bytes,
+            "result": result,
+            "expected": expected,
+            "error_message": error if error else None
+        }
+
+        # --- Print Output ---
+        if error is None:
+            # Use utility function for comparison
+            passed = compare_results(result, expected)
+            test_result_record["passed"] = passed
+            print_test_case_result(
+                case_num=case_num,
+                passed=passed,
+                exec_time=time_str,
+                memory=mem_str,
+                result=result,
+                expected=expected,
+                stdout=extra_stdout if extra_stdout else None,
+                input_values=input_values if detailed else None,
+                detailed=detailed
+            )
+        else:
+            print_error(
+                case_num=case_num,
+                error_msg=error,
+                stdout=extra_stdout if extra_stdout else None,
+                detailed=detailed,
+                traceback_str=stderr if detailed else None
+            )
+
+        # --- Record Performance History ---
+        if self.use_history and history_manager and not error and time_ms is not None:
+            try:
+                history_manager.add_performance_record(
+                    case_num=case_num,
+                    metrics={
+                        "time_ms": time_ms,
+                        "mem_bytes": mem_bytes if mem_bytes is not None else 0
+                    },
+                    snapshot_id=snapshot_id
+                )
+            except Exception as e:
+                if detailed:
+                    print_warning(f"Failed to record performance for case {case_num}: {e}")
+        
+        return test_result_record
+
+
+    def run_tests(
+        self,
+        language: Optional[str] = None,
+        detailed: bool = False,
+        cases_arg: Optional[str] = None,
+        snapshot_comment: Optional[str] = None,
+        snapshot_tag: Optional[str] = None
+    ) -> None:
+        """Runs test cases against the specified language implementation."""
+        try:
+            context = self._prepare_execution_context(language)
+            lang = context["language"]
+            plugin = context["plugin"]
+            testcases_data = context["testcases"]
+            function_name = context["function_name"]
+            history_manager = context["history_manager"]
+            
+            testcase_list = testcases_data["testcases"]
+            selected_cases = parse_cases_arg(cases_arg, len(testcase_list))
+            
+        except (ValueError, FileNotFoundError, Exception) as e:
             print_error(
                 case_num="N/A",
                 error_msg=str(e),
@@ -340,25 +512,13 @@ class ChallengeTester:
             )
             return
 
-        print_warning(f"Testing {language} function: {function_name} ({self.platform}/{self.challenge_path})")
+        print_warning(f"Testing {lang} function: {function_name} ({self.platform}/{self.challenge_path})")
 
-        # Create a snapshot of the current solution if history is enabled
-        snapshot_id = None
-        if self.use_history and history_manager:
-            try:
-                solution_path = self.get_solution_path(language)
-                if os.path.exists(solution_path):
-                    snapshot_id = history_manager.create_snapshot(
-                        solution_file=solution_path,
-                        function_name=function_name,
-                        tag=snapshot_tag or "test",
-                        comment=snapshot_comment
-                    )
-                    if detailed:
-                        print_info(f"Created snapshot: {snapshot_id}")
-            except Exception as e:
-                print_warning(f"Failed to create history snapshot: {e}")
+        snapshot_id = self._create_snapshot_if_enabled(
+            history_manager, lang, function_name, snapshot_tag, snapshot_comment, detailed
+        )
 
+        # Prepare batch
         batch_inputs = []
         batch_expected = []
         batch_case_nums = []
@@ -370,117 +530,71 @@ class ChallengeTester:
             batch_expected.append(testcase["output"])
             batch_case_nums.append(case_num)
 
-        language_dir = self._get_language_dir(language)
-        
-        # Use progress for batch operations
+        if not batch_inputs:
+             print_warning("No test cases selected or found.")
+             print_summary(0, 0, 0, len(testcase_list))
+             return
+
+        language_dir = self._get_language_dir(lang)
+        total_passed = 0
+        all_test_results_records = []
+        total_time = 0
+
+        # Execute tests
         with get_progress_context("Running tests...") as progress:
             task = progress.add_task(f"Testing {len(batch_inputs)} cases...", total=len(batch_inputs))
             
             start_time = time.time()
-            results = plugin.run_many(language_dir, function_name, batch_inputs)
+            try:
+                results = plugin.run_many(language_dir, function_name, batch_inputs)
+            except Exception as e:
+                 print_error(
+                    case_num="Batch",
+                    error_msg=f"Error during batch execution: {e}",
+                    detailed=True,
+                    traceback_str=traceback.format_exc() if detailed else None
+                 )
+                 return # Cannot proceed if batch execution failed
             total_time = time.time() - start_time
             
-            total_passed = 0
-            total_run = len(batch_case_nums)
-            test_results = []
-
-            for idx, (result, extra_stdout, stderr, exit_code, exec_time, max_rss_kb, profile_info) in enumerate(results):
+            # Process results
+            for idx, result_data in enumerate(results):
                 progress.update(task, advance=1)
-                
                 case_num = batch_case_nums[idx]
-                input_values = batch_inputs[idx]
-                expected = batch_expected[idx]
-                error = None if exit_code == 0 else stderr
+                
+                test_result_record = self._process_test_result(
+                    result_data=result_data,
+                    case_num=case_num,
+                    input_values=batch_inputs[idx],
+                    expected=batch_expected[idx],
+                    history_manager=history_manager,
+                    snapshot_id=snapshot_id,
+                    detailed=detailed
+                )
+                all_test_results_records.append(test_result_record)
+                if test_result_record["passed"]:
+                    total_passed += 1
 
-                if profile_info and "time_ms" in profile_info:
-                    time_ms = profile_info['time_ms']
-                    time_str = format_time(time_ms / 1000)
-                else:
-                    time_ms = None
-                    time_str = format_time(exec_time) if exec_time is not None else "N/A"
-
-                if profile_info and "mem_bytes" in profile_info:
-                    mem_bytes = profile_info['mem_bytes']
-                    mem_str = format_memory(mem_bytes)
-                elif max_rss_kb is not None:
-                    mem_bytes = max_rss_kb * 1024
-                    mem_str = format_memory(mem_bytes)
-                else:
-                    mem_bytes = None
-                    mem_str = "N/A"
-
-                test_result = {
-                    "case_num": case_num,
-                    "passed": False,
-                    "error": bool(error),
-                    "exec_time_ms": time_ms,
-                    "mem_bytes": mem_bytes,
-                    "result": result,
-                    "expected": expected
-                }
-
-                if error is None:
-                    passed = self._compare_results(result, expected)
-                    test_result["passed"] = passed
-                    if passed:
-                        total_passed += 1
-                    print_test_case_result(
-                        case_num=case_num,
-                        passed=passed,
-                        exec_time=time_str,
-                        memory=mem_str,
-                        result=result,
-                        expected=expected,
-                        stdout=extra_stdout if extra_stdout else None,
-                        input_values=input_values if detailed else None,
-                        detailed=detailed
-                    )
-                else:
-                    test_result["error_message"] = error
-                    print_error(
-                        case_num=case_num,
-                        error_msg=error,
-                        stdout=extra_stdout if extra_stdout else None,
-                        detailed=detailed,
-                        traceback_str=stderr if detailed else None
-                    )
-
-                test_results.append(test_result)
-
-                # Record performance metrics in history
-                if self.use_history and history_manager and not error and time_ms is not None:
-                    try:
-                        history_manager.add_performance_record(
-                            case_num=case_num,
-                            metrics={
-                                "time_ms": time_ms,
-                                "mem_bytes": mem_bytes if mem_bytes is not None else 0
-                            },
-                            snapshot_id=snapshot_id
-                        )
-                    except Exception as e:
-                        if detailed:
-                            print_warning(f"Failed to record performance: {e}")
-
-        # Record test results in history
+        # Record overall test results in history
         if self.use_history and history_manager:
             try:
                 history_manager.add_test_results(
-                    results=test_results,
+                    results=all_test_results_records,
                     snapshot_id=snapshot_id
                 )
                 if detailed:
-                    print_info("Test results recorded in history")
+                    print_info("Overall test results recorded in history")
             except Exception as e:
-                print_warning(f"Failed to record test results: {e}")
+                print_warning(f"Failed to record overall test results: {e}")
 
-        print_summary(total_passed, total_run, len(selected_cases), len(testcase_list))
+        print_summary(total_passed, len(batch_case_nums), len(selected_cases), len(testcase_list))
         if detailed:
-            print_info(f"Total batch time: {format_time(total_time)}")
+            print_info(f"Total batch execution time: {format_time(total_time)}")
+
 
     def profile(
-        self, 
-        language=None, 
+        self,
+        language: Optional[str] = None,
         iterations: int = 100, 
         detailed: bool = False, 
         cases_arg: str = None,
@@ -512,7 +626,7 @@ class ChallengeTester:
             testcases = self.load_testcases()
             function_name = self.get_function_name(language)
             testcase_list = testcases["testcases"]
-            selected_cases = self._parse_cases_arg(cases_arg, len(testcase_list))
+            selected_cases = parse_cases_arg(cases_arg, len(testcase_list))
         except Exception as e:
             print_error(
                 case_num="N/A",
@@ -531,7 +645,7 @@ class ChallengeTester:
                 solution_path = self.get_solution_path(language)
                 if os.path.exists(solution_path):
                     snapshot_id = history_manager.create_snapshot(
-                        solution_file=solution_path,
+                        solution_file_path=solution_path, # Corrected argument
                         function_name=function_name,
                         tag=snapshot_tag or "profile",
                         comment=snapshot_comment
@@ -632,33 +746,27 @@ class ChallengeTester:
         print_profile_summary(total_profiled, len(selected_cases), len(testcase_list))
 
     def analyze_complexity(self, language=None) -> None:
-        language = language or self.language
-        if not language:
+        try:
+            context = self._prepare_execution_context(language)
+            resolved_language = context["language"]
+            # plugin = context["plugin"] # Not needed for complexity analysis itself
+        except (ValueError, FileNotFoundError, Exception) as e:
+             print_error("N/A", f"Failed to prepare context for complexity analysis: {e}", detailed=True)
+             return
+
+        # Check language after context is prepared
+        if resolved_language.lower() != "python":
             print_error(
                 case_num="N/A",
-                error_msg="No language specified",
+                error_msg=f"Complexity analysis currently only supports Python. Selected language is '{resolved_language}'.",
                 detailed=True
             )
             return
         
-        if language.lower() != "python":
-            print_error(
-                case_num="N/A",
-                error_msg=f"Complexity analysis currently only supports Python. Selected language is '{language}'.",
-                detailed=True
-            )
-            return
+        # plugin = get_plugin(resolved_language) # Already available in context if needed
+        # if not plugin: ... # Already checked in context helper
         
-        plugin = get_plugin(language)
-        if not plugin:
-            print_error(
-                case_num="N/A",
-                error_msg=f"No plugin found for language: {language}",
-                detailed=True
-            )
-            return
-        
-        solution_path = self.get_solution_path(language)
+        solution_path = self.get_solution_path(resolved_language) # Use resolved language
         if not os.path.exists(solution_path):
             print_error(
                 case_num="N/A",
@@ -684,7 +792,7 @@ class ChallengeTester:
             for method_name, analysis in complexity_results.items():
                 print_complexity_method(method_name, analysis)
 
-            complexity_file = os.path.join(self.challenge_dir, f"{language}_complexity.json")
+            complexity_file = os.path.join(self.challenge_dir, f"{resolved_language}_complexity.json")
             with open(complexity_file, "w") as f:
                 complexity_data = {
                     "analyzed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -737,7 +845,7 @@ class ChallengeTester:
             
         try:
             # Get the snapshots
-            snapshots = history_manager._get_latest_snapshots(limit=limit)
+            snapshots = history_manager._get_language_snapshot_ids(limit=limit)
             if not snapshots:
                 print_warning(f"No snapshots found for {language} in {self.platform}/{self.challenge_path}")
                 return
@@ -1113,9 +1221,21 @@ class ChallengeTester:
             snapshot_id: ID of the snapshot to restore
             backup: Whether to create a backup of the current solution
         """
-        # Initialize history manager
-        language = snapshot_id.split("_")[-1]  # Extract language from snapshot_id
+        # Get language from metadata
+        temp_history_manager = HistoryManager(self.challenge_dir, language="temp", max_snapshots=self.max_snapshots)
+        language = temp_history_manager.get_snapshot_language(snapshot_id)
+
+        if not language:
+             print_error(
+                 case_num="N/A",
+                 error_msg=f"Could not determine language for snapshot: {snapshot_id}",
+                 detailed=True
+             )
+             return
+
+        # Initialize the proper history manager with the determined language
         history_manager = self._initialize_history_manager(language)
+
         if not history_manager:
             print_error(
                 case_num="N/A",
@@ -1225,9 +1345,10 @@ class ChallengeTester:
                 if cases_arg:
                     testcases = self.load_testcases()
                     total_cases = len(testcases["testcases"])
-                    selected_cases = self._parse_cases_arg(cases_arg, total_cases)
+                    # Use the utility function for parsing cases argument
+                    selected_cases = parse_cases_arg(cases_arg, total_cases)
                     cases_filter = list(selected_cases)
-                
+
                 progress.update(task, advance=1, description="Initializing visualizer...")
                 
                 # Initialize visualizer
