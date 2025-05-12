@@ -3,7 +3,6 @@ import json
 import datetime
 import tempfile
 import webbrowser
-import subprocess
 from typing import Dict, List, Optional
 
 class HistoryVisualizer:
