@@ -1,5 +1,6 @@
 from typing import Optional, List, Dict, Any, Union
 
+from challenge_cli.utils import format_memory, format_time
 from rich import print as rprint
 from rich.box import ROUNDED
 from rich.columns import Columns
@@ -315,6 +316,29 @@ def print_profile_summary(total_profiled: int, selected: int, total: int):
     )
     
     console.print(_create_panel(summary_content, padding=(1, 2)))
+
+def print_profile_summary_table(profiled_results: List[Dict[str, Any]]):
+    table = Table(title="[bold]Profiling Summary[/bold]", box=ROUNDED)
+    table.add_column("Case", style="cyan", width=8)
+    table.add_column("Avg Time", style="green", width=15)
+    table.add_column("Min Time", style="green", width=15)
+    table.add_column("Max Time", style="green", width=15)
+    table.add_column("Avg Mem", style="blue", width=15)
+    table.add_column("Max Mem", style="blue", width=15)
+    table.add_column("Iterations", style="magenta", width=10)
+
+    for result in profiled_results:
+        table.add_row(
+            str(result["case_num"]),
+            format_time(result["avg_time"] / 1000) if result["avg_time"] is not None else "N/A",
+            format_time(result["min_time"] / 1000) if result["min_time"] is not None else "N/A",
+            format_time(result["max_time"] / 1000) if result["max_time"] is not None else "N/A",
+            format_memory(int(result["avg_mem_bytes"])) if result["avg_mem_bytes"] is not None else "N/A",
+            format_memory(int(result["max_mem_bytes"])) if result["max_mem_bytes"] is not None else "N/A",
+            str(result["iterations"]),
+        )
+    console.print(table)
+
 
 # ==============================================================================
 # Complexity Analysis Output

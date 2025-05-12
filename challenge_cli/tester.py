@@ -24,16 +24,15 @@ from challenge_cli.output import (
     print_complexity_footer,
     print_complexity_header,
     print_complexity_method,
+    print_profile_summary_table,
     print_test_case_result,
     print_error,
     print_summary,
-    print_profile_result,
     print_profile_summary,
     print_info,
     print_warning,
     print_success,
     print_fail,
-    print_divider,
     # Add the new functions
     print_snapshot_list,
     print_snapshot_comparison,
@@ -41,7 +40,6 @@ from challenge_cli.output import (
     print_visualization_generated,
     get_progress_context,
     console,
-    print_banner
 )
 
 # Use Rich components for better display
@@ -609,10 +607,10 @@ class ChallengeTester:
                 detailed=True
             )
             return
-        
+
         # Update history manager for this language
         history_manager = self._initialize_history_manager(language)
-        
+
         plugin = get_plugin(language)
         if not plugin:
             print_error(
@@ -621,7 +619,7 @@ class ChallengeTester:
                 detailed=True
             )
             return
-        
+
         try:
             testcases = self.load_testcases()
             function_name = self.get_function_name(language)
@@ -645,7 +643,7 @@ class ChallengeTester:
                 solution_path = self.get_solution_path(language)
                 if os.path.exists(solution_path):
                     snapshot_id = history_manager.create_snapshot(
-                        solution_file_path=solution_path, # Corrected argument
+                        solution_file_path=solution_path,
                         function_name=function_name,
                         tag=snapshot_tag or "profile",
                         comment=snapshot_comment
@@ -657,6 +655,7 @@ class ChallengeTester:
 
         language_dir = self._get_language_dir(language)
         total_profiled = 0
+        profiled_results = []
 
         for i, testcase in enumerate(testcase_list):
             case_num = i + 1
@@ -670,6 +669,7 @@ class ChallengeTester:
             error = None
             times = []
             mems = []
+            extra_stdout = ""
             for result, extra_stdout, stderr, exit_code, exec_time, max_rss_kb, profile_info in results:
                 if exit_code != 0:
                     error = stderr
@@ -709,19 +709,16 @@ class ChallengeTester:
             else:
                 avg_mem_bytes = min_mem_bytes = max_mem_bytes = None
 
-            avg_mem_str = format_memory(int(avg_mem_bytes)) if avg_mem_bytes is not None else "N/A"
-            max_mem_str = format_memory(int(max_mem_bytes)) if max_mem_bytes is not None else "N/A"
-
-            print_profile_result(
-                case_num=case_num,
-                iterations=iterations,
-                avg_time=format_time(avg_time / 1000) if avg_time is not None else "N/A",
-                min_time=format_time(min_time / 1000) if min_time is not None else "N/A",
-                max_time=format_time(max_time / 1000) if max_time is not None else "N/A",
-                avg_mem_str=avg_mem_str,
-                max_peak_mem_str=max_mem_str, 
-                profile_stdout=extra_stdout if 'extra_stdout' in locals() else ""
-            )
+            # Collect for summary table
+            profiled_results.append({
+                "case_num": case_num,
+                "iterations": iterations,
+                "avg_time": avg_time,
+                "min_time": min_time,
+                "max_time": max_time,
+                "avg_mem_bytes": avg_mem_bytes,
+                "max_mem_bytes": max_mem_bytes,
+            })
 
             # Record performance in history
             if self.use_history and history_manager and avg_time is not None:
@@ -743,7 +740,12 @@ class ChallengeTester:
                     if detailed:
                         print_warning(f"Failed to record performance: {e}")
 
+        # Print the condensed summary table
+        if profiled_results:
+            print_profile_summary_table(profiled_results)
+
         print_profile_summary(total_profiled, len(selected_cases), len(testcase_list))
+
 
     def analyze_complexity(self, language=None) -> None:
         try:
