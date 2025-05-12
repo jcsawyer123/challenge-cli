@@ -1,6 +1,7 @@
 import os
 import json
 from typing import Any, Dict, Set, List, Optional, Union
+import datetime
 
 # --- Formatting ---
 
@@ -21,6 +22,22 @@ def format_time(seconds: float) -> str:
     else:
         return f"{seconds:.6f} s"
 
+def format_relative_time(iso_str: str) -> str:
+    try:
+        dt = datetime.datetime.fromisoformat(iso_str)
+        now = datetime.datetime.now(dt.tzinfo)
+        delta = now - dt
+        seconds = int(delta.total_seconds())
+        if seconds < 60:
+            return f"{seconds}s ago"
+        elif seconds < 3600:
+            return f"{seconds // 60}m ago"
+        elif seconds < 86400:
+            return f"{seconds // 3600}h ago"
+        else:
+            return f"{seconds // 86400}d ago"
+    except Exception:
+        return "?"
 
 def format_memory(bytes_value: int) -> str:
     """Format memory size in appropriate units."""

@@ -1,6 +1,6 @@
 from typing import Optional, List, Dict, Any, Union
 
-from challenge_cli.utils import format_memory, format_time
+from challenge_cli.utils import format_memory, format_relative_time, format_time
 from rich import print as rprint
 from rich.box import ROUNDED
 from rich.columns import Columns
@@ -382,20 +382,19 @@ def print_snapshot_list(snapshots: List[Dict[str, Any]], language: str, challeng
     table = _create_table(
         title=f"[bold]Solution History: {challenge_path} ({language})[/bold]"
     )
-    
-    table.add_column("Snapshot ID", style=CYAN_STYLE, width=25)
-    table.add_column("Created", style=SUCCESS_STYLE, width=20)
-    table.add_column("Tag", style=YELLOW_STYLE, width=15)
+    table.add_column("Snapshot ID", style=CYAN_STYLE, width=12)
+    table.add_column("Age", style=INFO_STYLE, width=10)
+    table.add_column("Tag", style=YELLOW_STYLE, width=12)
     table.add_column("Comment", style=WHITE_STYLE, width=40, overflow="fold")
     
     for snapshot in snapshots:
+        created_at = snapshot['created_at']
         table.add_row(
             snapshot['id'],
-            snapshot['created_at'],
+            format_relative_time(created_at),
             snapshot.get('tag', ''),
             snapshot.get('comment', '')
         )
-    
     console.print(table)
 
 def print_snapshot_comparison(snapshot1_info: Dict[str, Any], snapshot2_info: Dict[str, Any], diff_lines: List[str]):
