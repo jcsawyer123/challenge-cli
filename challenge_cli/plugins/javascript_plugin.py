@@ -8,11 +8,6 @@ from .docker_utils import (
 )
 
 # WRAPPER_TEMPLATE for JavaScript:
-# - Takes JSON args from process.argv
-# - Calls the user's function
-# - Measures function-only time and memory
-# - Prints LEETCODE_PROFILE marker
-# - Prints result as JSON
 JS_WRAPPER_TEMPLATE = """
 const {{ Solution }} = require('./solution');
 
@@ -94,9 +89,16 @@ try {{
 class JavaScriptPlugin(LanguagePlugin):
     """
     JavaScript language plugin for the LeetCode CLI.
-    - Uses a hot Docker container for fast repeated runs.
-    - Injects a wrapper for function-only profiling.
-    - Parses and returns result, extra stdout, and profile info.
+    
+    Uses a hot Docker container for fast repeated runs, injects a wrapper
+    for function-only profiling, and parses results with performance metrics.
+    
+    The wrapper template:
+    - Takes JSON args from process.argv
+    - Calls the user's function
+    - Measures function-only time and memory
+    - Prints LEETCODE_PROFILE marker
+    - Prints result as JSON
     """
 
     name = "javascript"

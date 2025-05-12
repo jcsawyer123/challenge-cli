@@ -1,6 +1,5 @@
 import os
 import json
-import shutil
 from .language_plugin import LanguagePlugin
 from .docker_utils import (
     ensure_docker_image,
@@ -9,11 +8,6 @@ from .docker_utils import (
 )
 
 # WRAPPER_TEMPLATE for Go:
-# - Reads args as JSON from os.Args[1:]
-# - Calls the user's function
-# - Measures function-only time and memory
-# - Prints LEETCODE_PROFILE: {...}
-# - Prints the result as JSON
 GO_WRAPPER_TEMPLATE = """
 package main
 
@@ -65,9 +59,16 @@ func toJson(v interface{{}}) string {{
 class GoPlugin(LanguagePlugin):
     """
     Go language plugin for the LeetCode CLI.
-    - Uses a hot Docker container for fast repeated runs.
-    - Injects a wrapper for function-only profiling.
-    - Parses and returns result, extra stdout, and profile info.
+    
+    Uses a hot Docker container for fast repeated runs, injects a wrapper
+    for function-only profiling, and parses results with performance metrics.
+    
+    The wrapper template:
+    - Reads args as JSON from os.Args[1:]  
+    - Calls the user's function  
+    - Measures function-only time and memory
+    - Prints LEETCODE_PROFILE: {...}
+    - Prints the result as JSON
     """
 
     name = "go"

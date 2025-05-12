@@ -8,11 +8,6 @@ from .docker_utils import (
 )
 
 # WRAPPER_TEMPLATE: Injected into the workspace as main.py.
-# - Parses input args as JSON from sys.argv[1:]
-# - Calls the user's function/method
-# - Measures function-only time and memory (tracemalloc)
-# - Prints a marker line: LEETCODE_PROFILE: {"time_ms": float, "mem_bytes": int}
-# - Prints the function result as JSON
 WRAPPER_TEMPLATE = """
 import sys
 import json
@@ -39,9 +34,16 @@ if __name__ == "__main__":
 class PythonPlugin(LanguagePlugin):
     """
     Python language plugin for the LeetCode CLI.
-    - Uses a hot Docker container for fast repeated runs.
-    - Injects a wrapper for function-only profiling.
-    - Parses and returns result, extra stdout, and profile info.
+    
+    Uses a hot Docker container for fast repeated runs, injects a wrapper
+    for function-only profiling, and parses results with performance metrics.
+    
+    The wrapper template:
+    - Parses input args as JSON from sys.argv[1:]
+    - Calls the user's function/method
+    - Measures function-only time and memory (tracemalloc)
+    - Prints a marker line: LEETCODE_PROFILE: {"time_ms": float, "mem_bytes": int}
+    - Prints the function result as JSON
     """
 
     name = "python"
