@@ -2,11 +2,15 @@ import json
 import os
 import time
 import traceback
-from typing import Any, Dict, Set
+import difflib
+import datetime
+from typing import Any, Dict, Set, List, Optional
 
 from challenge_cli.plugins import get_plugin
 from challenge_cli.utils import format_time, format_memory
 from challenge_cli.analyzer import ComplexityAnalyzer
+from challenge_cli.history_manager import HistoryManager
+from challenge_cli.visualization import HistoryVisualizer
 from challenge_cli.output import (
     print_complexity_footer,
     print_complexity_header,
@@ -16,7 +20,11 @@ from challenge_cli.output import (
     print_summary,
     print_profile_result,
     print_profile_summary,
+    print_info,
     print_warning,
+    print_success,
+    print_fail,
+    print_divider,
 )
 
 TESTCASES_TEMPLATE = """{
@@ -43,15 +51,34 @@ COMPLEXITY_TEMPLATE = """{
 """
 
 class ChallengeTester:
-    def __init__(self, platform: str, challenge_path: str, language: str = None, problems_dir: str = None):
+    def __init__(
+        self, 
+        platform: str, 
+        challenge_path: str, 
+        language: str = None, 
+        problems_dir: str = None,
+        use_history: bool = True,
+        max_snapshots: int = 50
+    ):
         self.platform = platform
         self.challenge_path = challenge_path
         self.language = language
         self.problems_dir = problems_dir or os.getcwd()
+        self.use_history = use_history
+        self.max_snapshots = max_snapshots
         
         # Full path: problems_dir/platform/challenge_path
         self.challenge_dir = os.path.join(self.problems_dir, self.platform, self.challenge_path)
         self.testcases_file = os.path.join(self.challenge_dir, "testcases.json")
+        
+        # Initialize history manager if history is enabled
+        self.history_manager = None
+        if self.use_history and self.language:
+            self.history_manager = HistoryManager(
+                challenge_dir=self.challenge_dir,
+                language=self.language,
+                max_snapshots=self.max_snapshots
+            )
 
     def _get_language_dir(self, language=None):
         language = language or self.language
@@ -87,13 +114,36 @@ class ChallengeTester:
         
         raise ValueError(f"No implementation found for language: {language}")
 
+    def _initialize_history_manager(self, language=None):
+        """Initialize or update the history manager if history is enabled."""
+        if not self.use_history:
+            return None
+            
+        language = language or self.language
+        if not language:
+            return None
+            
+        # If language changed or manager not initialized
+        if self.history_manager is None or self.history_manager.language != language:
+            self.history_manager = HistoryManager(
+                challenge_dir=self.challenge_dir,
+                language=language,
+                max_snapshots=self.max_snapshots
+            )
+        
+        return self.history_manager
+
     def init_problem(self, language="python", function_name="solve") -> None:
         # Create challenge directory structure
         os.makedirs(self.challenge_dir, exist_ok=True)
         
         plugin = get_plugin(language)
         if not plugin:
-            print(f"ERROR: No plugin found for language '{language}'")
+            print_error(
+                case_num="N/A",
+                error_msg=f"No plugin found for language '{language}'",
+                detailed=True
+            )
             return
         
         language_dir = self._get_language_dir(language)
@@ -160,13 +210,30 @@ class ChallengeTester:
             with open(complexity_file, "w") as f:
                 f.write(COMPLEXITY_TEMPLATE)
         
-        if solution_already_exists:
-            print(f"Updated {language} implementation for {self.platform} challenge: {self.challenge_path}")
-        else:
-            print(f"Added {language} implementation for {self.platform} challenge: {self.challenge_path}")
+        # Initialize history tracking
+        if self.use_history:
+            self._initialize_history_manager(language)
+            # Create initial snapshot with "initial" tag
+            try:
+                solution_path = self.get_solution_path(language)
+                if os.path.exists(solution_path):
+                    self.history_manager.create_snapshot(
+                        solution_file=solution_path,
+                        function_name=function_name,
+                        tag="initial",
+                        comment="Initial solution template"
+                    )
+                    print_info("Created initial snapshot in history")
+            except Exception as e:
+                print_warning(f"Failed to create initial snapshot: {e}")
         
-        print(f"Please edit {solution_path} with your solution.")
-        print(f"And update {self.testcases_file} with your test cases.")
+        if solution_already_exists:
+            print_success(f"Updated {language} implementation for {self.platform} challenge: {self.challenge_path}")
+        else:
+            print_success(f"Added {language} implementation for {self.platform} challenge: {self.challenge_path}")
+        
+        print_info(f"Please edit {solution_path} with your solution.")
+        print_info(f"And update {self.testcases_file} with your test cases.")
 
     def load_testcases(self) -> Dict:
         if not os.path.exists(self.testcases_file):
@@ -208,7 +275,14 @@ class ChallengeTester:
         except Exception:
             return stdout.strip()
 
-    def run_tests(self, language=None, detailed: bool = False, cases_arg: str = None) -> None:
+    def run_tests(
+        self, 
+        language=None, 
+        detailed: bool = False, 
+        cases_arg: str = None,
+        snapshot_comment: str = None,
+        snapshot_tag: str = None
+    ) -> None:
         language = language or self.language
         if not language:
             try:
@@ -226,6 +300,9 @@ class ChallengeTester:
                     detailed=True
                 )
                 return
+        
+        # Update history manager for this language
+        history_manager = self._initialize_history_manager(language)
         
         plugin = get_plugin(language)
         if not plugin:
@@ -252,6 +329,23 @@ class ChallengeTester:
 
         print_warning(f"Testing {language} function: {function_name} ({self.platform}/{self.challenge_path})")
 
+        # Create a snapshot of the current solution if history is enabled
+        snapshot_id = None
+        if self.use_history and history_manager:
+            try:
+                solution_path = self.get_solution_path(language)
+                if os.path.exists(solution_path):
+                    snapshot_id = history_manager.create_snapshot(
+                        solution_file=solution_path,
+                        function_name=function_name,
+                        tag=snapshot_tag or "test",
+                        comment=snapshot_comment
+                    )
+                    if detailed:
+                        print_info(f"Created snapshot: {snapshot_id}")
+            except Exception as e:
+                print_warning(f"Failed to create history snapshot: {e}")
+
         batch_inputs = []
         batch_expected = []
         batch_case_nums = []
@@ -270,6 +364,7 @@ class ChallengeTester:
 
         total_passed = 0
         total_run = len(batch_case_nums)
+        test_results = []
 
         for idx, (result, extra_stdout, stderr, exit_code, exec_time, max_rss_kb, profile_info) in enumerate(results):
             case_num = batch_case_nums[idx]
@@ -278,8 +373,10 @@ class ChallengeTester:
             error = None if exit_code == 0 else stderr
 
             if profile_info and "time_ms" in profile_info:
-                time_str = format_time(profile_info['time_ms'] / 1000)
+                time_ms = profile_info['time_ms']
+                time_str = format_time(time_ms / 1000)
             else:
+                time_ms = None
                 time_str = format_time(exec_time) if exec_time is not None else "N/A"
 
             if profile_info and "mem_bytes" in profile_info:
@@ -289,10 +386,22 @@ class ChallengeTester:
                 mem_bytes = max_rss_kb * 1024
                 mem_str = format_memory(mem_bytes)
             else:
+                mem_bytes = None
                 mem_str = "N/A"
+
+            test_result = {
+                "case_num": case_num,
+                "passed": False,
+                "error": bool(error),
+                "exec_time_ms": time_ms,
+                "mem_bytes": mem_bytes,
+                "result": result,
+                "expected": expected
+            }
 
             if error is None:
                 passed = self._compare_results(result, expected)
+                test_result["passed"] = passed
                 if passed:
                     total_passed += 1
                 print_test_case_result(
@@ -307,6 +416,7 @@ class ChallengeTester:
                     detailed=detailed
                 )
             else:
+                test_result["error_message"] = error
                 print_error(
                     case_num=case_num,
                     error_msg=error,
@@ -315,11 +425,48 @@ class ChallengeTester:
                     traceback_str=stderr if detailed else None
                 )
 
+            test_results.append(test_result)
+
+            # Record performance metrics in history
+            if self.use_history and history_manager and not error and time_ms is not None:
+                try:
+                    history_manager.add_performance_record(
+                        case_num=case_num,
+                        metrics={
+                            "time_ms": time_ms,
+                            "mem_bytes": mem_bytes if mem_bytes is not None else 0
+                        },
+                        snapshot_id=snapshot_id
+                    )
+                except Exception as e:
+                    if detailed:
+                        print_warning(f"Failed to record performance: {e}")
+
+        # Record test results in history
+        if self.use_history and history_manager:
+            try:
+                history_manager.add_test_results(
+                    results=test_results,
+                    snapshot_id=snapshot_id
+                )
+                if detailed:
+                    print_info("Test results recorded in history")
+            except Exception as e:
+                print_warning(f"Failed to record test results: {e}")
+
         print_summary(total_passed, total_run, len(selected_cases), len(testcase_list))
         if detailed:
-            print(f"Total batch time: {format_time(total_time)}")
+            print_info(f"Total batch time: {format_time(total_time)}")
 
-    def profile(self, language=None, iterations: int = 100, detailed: bool = False, cases_arg: str = None) -> None:
+    def profile(
+        self, 
+        language=None, 
+        iterations: int = 100, 
+        detailed: bool = False, 
+        cases_arg: str = None,
+        snapshot_comment: str = None,
+        snapshot_tag: str = None
+    ) -> None:
         language = language or self.language
         if not language:
             print_error(
@@ -328,6 +475,9 @@ class ChallengeTester:
                 detailed=True
             )
             return
+        
+        # Update history manager for this language
+        history_manager = self._initialize_history_manager(language)
         
         plugin = get_plugin(language)
         if not plugin:
@@ -353,6 +503,23 @@ class ChallengeTester:
             return
 
         print_warning(f"Profiling {language} function: {function_name} ({self.platform}/{self.challenge_path})")
+
+        # Create a snapshot of the current solution if history is enabled
+        snapshot_id = None
+        if self.use_history and history_manager:
+            try:
+                solution_path = self.get_solution_path(language)
+                if os.path.exists(solution_path):
+                    snapshot_id = history_manager.create_snapshot(
+                        solution_file=solution_path,
+                        function_name=function_name,
+                        tag=snapshot_tag or "profile",
+                        comment=snapshot_comment
+                    )
+                    if detailed:
+                        print_info(f"Created snapshot: {snapshot_id}")
+            except Exception as e:
+                print_warning(f"Failed to create history snapshot: {e}")
 
         language_dir = self._get_language_dir(language)
         total_profiled = 0
@@ -386,7 +553,7 @@ class ChallengeTester:
                 print_error(
                     case_num=case_num,
                     error_msg=error,
-                    stdout=extra_stdout,
+                    stdout=extra_stdout if 'extra_stdout' in locals() else None,
                     detailed=detailed,
                     traceback_str=stderr if detailed else None
                 )
@@ -419,8 +586,28 @@ class ChallengeTester:
                 max_time=format_time(max_time / 1000) if max_time is not None else "N/A",
                 avg_mem_str=avg_mem_str,
                 max_peak_mem_str=max_mem_str, 
-                profile_stdout=extra_stdout if extra_stdout else ""
+                profile_stdout=extra_stdout if 'extra_stdout' in locals() else ""
             )
+
+            # Record performance in history
+            if self.use_history and history_manager and avg_time is not None:
+                try:
+                    history_manager.add_performance_record(
+                        case_num=case_num,
+                        metrics={
+                            "time_ms": avg_time,
+                            "mem_bytes": int(avg_mem_bytes) if avg_mem_bytes is not None else 0,
+                            "min_time_ms": min_time,
+                            "max_time_ms": max_time,
+                            "min_mem_bytes": int(min_mem_bytes) if min_mem_bytes is not None else 0,
+                            "max_mem_bytes": int(max_mem_bytes) if max_mem_bytes is not None else 0,
+                            "iterations": iterations
+                        },
+                        snapshot_id=snapshot_id
+                    )
+                except Exception as e:
+                    if detailed:
+                        print_warning(f"Failed to record performance: {e}")
 
         print_profile_summary(total_profiled, len(selected_cases), len(testcase_list))
 
@@ -497,6 +684,515 @@ class ChallengeTester:
             print_error(
                 case_num="N/A",
                 error_msg=f"Error during complexity analysis: {str(e)}",
+                detailed=True,
+                traceback_str=traceback.format_exc()
+            )
+            
+    def list_history(self, language=None, limit=10):
+        """
+        List solution snapshots.
+        
+        Args:
+            language: Language to filter by
+            limit: Maximum number of snapshots to display
+        """
+        language = language or self.language
+        if not language:
+            print_error(
+                case_num="N/A",
+                error_msg="No language specified",
+                detailed=True
+            )
+            return
+            
+        # Update history manager for this language
+        history_manager = self._initialize_history_manager(language)
+        if not history_manager:
+            print_error(
+                case_num="N/A",
+                error_msg="History tracking is not enabled.",
+                detailed=True
+            )
+            return
+            
+        try:
+            # Get the snapshots
+            snapshots = history_manager._get_latest_snapshots(limit=limit)
+            if not snapshots:
+                print_warning(f"No snapshots found for {language} in {self.platform}/{self.challenge_path}")
+                return
+                
+            print_warning(f"Solution history for {self.platform}/{self.challenge_path} ({language})")
+            print_divider()
+            
+            for snapshot_id in snapshots:
+                snapshot_info = history_manager.get_snapshot_info(snapshot_id)
+                if not snapshot_info:
+                    continue
+                    
+                created_at = snapshot_info.get("created_at", "Unknown")
+                tag = snapshot_info.get("tag", "")
+                comment = snapshot_info.get("comment", "")
+                function_name = snapshot_info.get("function_name", "")
+                
+                # Format timestamp
+                try:
+                    dt = datetime.datetime.fromisoformat(created_at)
+                    created_at = dt.strftime("%Y-%m-%d %H:%M:%S")
+                except:
+                    pass
+                    
+                # Format tag
+                if tag:
+                    tag = f"[{tag}]"
+                    
+                print(f"{snapshot_id}  {created_at}  {tag}")
+                if comment:
+                    print(f"  Comment: {comment}")
+                if function_name:
+                    print(f"  Function: {function_name}")
+                print()
+                
+            print_divider()
+            print_info(f"Use 'challenge-cli history show {self.challenge_path} <snapshot_id>' to view a snapshot")
+            print_info(f"Use 'challenge-cli history compare {self.challenge_path} <id1> <id2>' to compare snapshots")
+                
+        except Exception as e:
+            print_error(
+                case_num="N/A",
+                error_msg=f"Error listing history: {str(e)}",
+                detailed=True,
+                traceback_str=traceback.format_exc()
+            )
+            
+    def show_snapshot(self, snapshot_id):
+        """
+        Show the details of a specific snapshot.
+        
+        Args:
+            snapshot_id: ID of the snapshot to show
+        """
+        # Initialize history manager
+        language = snapshot_id.split("_")[-1]  # Extract language from snapshot_id
+        history_manager = self._initialize_history_manager(language)
+        if not history_manager:
+            print_error(
+                case_num="N/A",
+                error_msg="History tracking is not enabled.",
+                detailed=True
+            )
+            return
+            
+        try:
+            # Get snapshot info and solution
+            snapshot_info = history_manager.get_snapshot_info(snapshot_id)
+            if not snapshot_info:
+                print_error(
+                    case_num="N/A",
+                    error_msg=f"Snapshot not found: {snapshot_id}",
+                    detailed=True
+                )
+                return
+                
+            solution_code = history_manager.get_snapshot_solution(snapshot_id)
+            if not solution_code:
+                print_error(
+                    case_num="N/A",
+                    error_msg=f"Solution code not found for snapshot: {snapshot_id}",
+                    detailed=True
+                )
+                return
+                
+            # Display snapshot information
+            created_at = snapshot_info.get("created_at", "Unknown")
+            tag = snapshot_info.get("tag", "")
+            comment = snapshot_info.get("comment", "")
+            function_name = snapshot_info.get("function_name", "")
+            
+            # Format timestamp
+            try:
+                dt = datetime.datetime.fromisoformat(created_at)
+                created_at = dt.strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                pass
+                
+            print_warning(f"Snapshot: {snapshot_id}")
+            print_divider()
+            print(f"Created: {created_at}")
+            if tag:
+                print(f"Tag: {tag}")
+            if comment:
+                print(f"Comment: {comment}")
+            if function_name:
+                print(f"Function: {function_name}")
+            print_divider()
+            print("Solution Code:")
+            print_divider()
+            print(solution_code)
+            print_divider()
+            
+            # Get performance history for this snapshot
+            performance_history = history_manager.get_performance_history()
+            snapshot_performance = [p for p in performance_history if p.get("snapshot_id") == snapshot_id]
+            
+            if snapshot_performance:
+                print("Performance Metrics:")
+                print_divider()
+                for record in snapshot_performance:
+                    case_num = record.get("case_num", "Unknown")
+                    metrics = record.get("metrics", {})
+                    time_ms = metrics.get("time_ms")
+                    mem_bytes = metrics.get("mem_bytes")
+                    
+                    time_str = format_time(time_ms / 1000) if time_ms is not None else "N/A"
+                    mem_str = format_memory(mem_bytes) if mem_bytes is not None else "N/A"
+                    
+                    print(f"Case {case_num}: Time: {time_str}, Memory: {mem_str}")
+                print_divider()
+                
+            # Get test results for this snapshot
+            test_history = history_manager.get_test_history()
+            snapshot_tests = [t for t in test_history if t.get("snapshot_id") == snapshot_id]
+            
+            if snapshot_tests:
+                print("Test Results:")
+                print_divider()
+                for record in snapshot_tests:
+                    results = record.get("results", [])
+                    summary = record.get("summary", {})
+                    total = summary.get("total", 0)
+                    passed = summary.get("passed", 0)
+                    
+                    print(f"Passed: {passed}/{total} test cases")
+                    for result in results:
+                        case_num = result.get("case_num", "Unknown")
+                        passed = result.get("passed", False)
+                        error = result.get("error", False)
+                        
+                        status = "✓ PASSED" if passed else "✗ FAILED"
+                        if error:
+                            status = "! ERROR"
+                            
+                        print(f"Case {case_num}: {status}")
+                print_divider()
+                
+        except Exception as e:
+            print_error(
+                case_num="N/A",
+                error_msg=f"Error showing snapshot: {str(e)}",
+                detailed=True,
+                traceback_str=traceback.format_exc()
+            )
+            
+    def compare_snapshots(self, snapshot_id1, snapshot_id2):
+        """
+        Compare two snapshots.
+        
+        Args:
+            snapshot_id1: ID of first snapshot
+            snapshot_id2: ID of second snapshot
+        """
+        # Initialize history manager for first snapshot
+        language1 = snapshot_id1.split("_")[-1]
+        history_manager1 = self._initialize_history_manager(language1)
+        
+        # Initialize history manager for second snapshot
+        language2 = snapshot_id2.split("_")[-1]
+        if language1 != language2:
+            history_manager2 = self._initialize_history_manager(language2)
+        else:
+            history_manager2 = history_manager1
+            
+        if not history_manager1 or not history_manager2:
+            print_error(
+                case_num="N/A",
+                error_msg="History tracking is not enabled.",
+                detailed=True
+            )
+            return
+            
+        try:
+            # Get solutions
+            solution1 = history_manager1.get_snapshot_solution(snapshot_id1)
+            if not solution1:
+                print_error(
+                    case_num="N/A",
+                    error_msg=f"Solution not found for snapshot: {snapshot_id1}",
+                    detailed=True
+                )
+                return
+                
+            solution2 = history_manager2.get_snapshot_solution(snapshot_id2)
+            if not solution2:
+                print_error(
+                    case_num="N/A",
+                    error_msg=f"Solution not found for snapshot: {snapshot_id2}",
+                    detailed=True
+                )
+                return
+                
+            # Get snapshot info
+            info1 = history_manager1.get_snapshot_info(snapshot_id1)
+            info2 = history_manager2.get_snapshot_info(snapshot_id2)
+            
+            # Format dates
+            created1 = info1.get("created_at", "Unknown")
+            created2 = info2.get("created_at", "Unknown")
+            
+            try:
+                dt1 = datetime.datetime.fromisoformat(created1)
+                created1 = dt1.strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                pass
+                
+            try:
+                dt2 = datetime.datetime.fromisoformat(created2)
+                created2 = dt2.strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                pass
+                
+            # Display comparison header
+            print_warning(f"Comparing Snapshots")
+            print_divider()
+            print(f"Snapshot 1: {snapshot_id1}  ({created1})")
+            if info1.get("tag"):
+                print(f"          Tag: {info1['tag']}")
+            if info1.get("comment"):
+                print(f"          Comment: {info1['comment']}")
+                
+            print(f"Snapshot 2: {snapshot_id2}  ({created2})")
+            if info2.get("tag"):
+                print(f"          Tag: {info2['tag']}")
+            if info2.get("comment"):
+                print(f"          Comment: {info2['comment']}")
+            print_divider()
+            
+            # Generate diff
+            lines1 = solution1.splitlines()
+            lines2 = solution2.splitlines()
+            
+            diff = list(difflib.unified_diff(
+                lines1, lines2,
+                fromfile=f"snapshot1 ({snapshot_id1})",
+                tofile=f"snapshot2 ({snapshot_id2})",
+                lineterm=""
+            ))
+            
+            if diff:
+                print("Differences:")
+                for line in diff:
+                    if line.startswith("+"):
+                        print(f"\033[92m{line}\033[0m")  # Green for additions
+                    elif line.startswith("-"):
+                        print(f"\033[91m{line}\033[0m")  # Red for deletions
+                    elif line.startswith("@@"):
+                        print(f"\033[96m{line}\033[0m")  # Cyan for location
+                    else:
+                        print(line)
+            else:
+                print("No differences found between the snapshots.")
+                
+            print_divider()
+            
+            # Compare performance if same language
+            if language1 == language2:
+                performance_history = history_manager1.get_performance_history()
+                perf1 = [p for p in performance_history if p.get("snapshot_id") == snapshot_id1]
+                perf2 = [p for p in performance_history if p.get("snapshot_id") == snapshot_id2]
+                
+                if perf1 and perf2:
+                    # Get most recent performance record for each case
+                    perf1_dict = {}
+                    for p in perf1:
+                        case_num = p.get("case_num")
+                        if case_num not in perf1_dict:
+                            perf1_dict[case_num] = p
+                    
+                    perf2_dict = {}
+                    for p in perf2:
+                        case_num = p.get("case_num")
+                        if case_num not in perf2_dict:
+                            perf2_dict[case_num] = p
+                    
+                    # Compare performance for shared test cases
+                    shared_cases = set(perf1_dict.keys()) & set(perf2_dict.keys())
+                    if shared_cases:
+                        print("Performance Comparison:")
+                        print_divider()
+                        print(f"{'Case':<5}  {'Snapshot 1 Time':<15}  {'Snapshot 2 Time':<15}  {'Diff %':<8}  {'Snapshot 1 Mem':<15}  {'Snapshot 2 Mem':<15}  {'Diff %':<8}")
+                        
+                        for case_num in sorted(shared_cases):
+                            metrics1 = perf1_dict[case_num].get("metrics", {})
+                            metrics2 = perf2_dict[case_num].get("metrics", {})
+                            
+                            time1 = metrics1.get("time_ms")
+                            time2 = metrics2.get("time_ms")
+                            mem1 = metrics1.get("mem_bytes")
+                            mem2 = metrics2.get("mem_bytes")
+                            
+                            time1_str = format_time(time1 / 1000) if time1 is not None else "N/A"
+                            time2_str = format_time(time2 / 1000) if time2 is not None else "N/A"
+                            mem1_str = format_memory(mem1) if mem1 is not None else "N/A"
+                            mem2_str = format_memory(mem2) if mem2 is not None else "N/A"
+                            
+                            # Calculate percentage differences
+                            if time1 and time2:
+                                time_diff_pct = ((time2 - time1) / time1) * 100
+                                time_diff_str = f"{time_diff_pct:+.2f}%"
+                            else:
+                                time_diff_str = "N/A"
+                                
+                            if mem1 and mem2:
+                                mem_diff_pct = ((mem2 - mem1) / mem1) * 100
+                                mem_diff_str = f"{mem_diff_pct:+.2f}%"
+                            else:
+                                mem_diff_str = "N/A"
+                                
+                            print(f"{case_num:<5}  {time1_str:<15}  {time2_str:<15}  {time_diff_str:<8}  {mem1_str:<15}  {mem2_str:<15}  {mem_diff_str:<8}")
+                
+        except Exception as e:
+            print_error(
+                case_num="N/A",
+                error_msg=f"Error comparing snapshots: {str(e)}",
+                detailed=True,
+                traceback_str=traceback.format_exc()
+            )
+            
+    def restore_snapshot(self, snapshot_id, backup=False):
+        """
+        Restore solution from a snapshot.
+        
+        Args:
+            snapshot_id: ID of the snapshot to restore
+            backup: Whether to create a backup of the current solution
+        """
+        # Initialize history manager
+        language = snapshot_id.split("_")[-1]  # Extract language from snapshot_id
+        history_manager = self._initialize_history_manager(language)
+        if not history_manager:
+            print_error(
+                case_num="N/A",
+                error_msg="History tracking is not enabled.",
+                detailed=True
+            )
+            return
+            
+        try:
+            # Get snapshot solution
+            solution_code = history_manager.get_snapshot_solution(snapshot_id)
+            if not solution_code:
+                print_error(
+                    case_num="N/A",
+                    error_msg=f"Solution not found for snapshot: {snapshot_id}",
+                    detailed=True
+                )
+                return
+                
+            # Get current solution path
+            solution_path = self.get_solution_path(language)
+            
+            # Create backup if requested
+            if backup and os.path.exists(solution_path):
+                backup_snapshot_id = None
+                try:
+                    function_name = self.get_function_name(language)
+                    backup_snapshot_id = history_manager.create_snapshot(
+                        solution_file=solution_path,
+                        function_name=function_name,
+                        tag="backup",
+                        comment=f"Backup before restoring {snapshot_id}"
+                    )
+                    print_info(f"Created backup snapshot: {backup_snapshot_id}")
+                except Exception as e:
+                    print_warning(f"Failed to create backup snapshot: {e}")
+                    return
+                    
+            # Restore the solution
+            with open(solution_path, "w") as f:
+                f.write(solution_code)
+                
+            print_success(f"Restored solution from snapshot: {snapshot_id}")
+            
+            # Get snapshot info
+            snapshot_info = history_manager.get_snapshot_info(snapshot_id)
+            if snapshot_info:
+                created_at = snapshot_info.get("created_at", "Unknown")
+                try:
+                    dt = datetime.datetime.fromisoformat(created_at)
+                    created_at = dt.strftime("%Y-%m-%d %H:%M:%S")
+                except:
+                    pass
+                    
+                tag = snapshot_info.get("tag", "")
+                comment = snapshot_info.get("comment", "")
+                
+                if tag:
+                    print_info(f"Tag: {tag}")
+                if comment:
+                    print_info(f"Comment: {comment}")
+                print_info(f"Created: {created_at}")
+                
+        except Exception as e:
+            print_error(
+                case_num="N/A",
+                error_msg=f"Error restoring snapshot: {str(e)}",
+                detailed=True,
+                traceback_str=traceback.format_exc()
+            )
+            
+    def visualize_history(self, language=None, output_path=None, cases_arg=None):
+        """
+        Visualize performance and test history.
+        
+        Args:
+            language: Programming language to visualize
+            output_path: Path to save the visualization HTML file (optional)
+            cases_arg: Filter specific test cases (e.g., '1,2,5-7')
+        """
+        language = language or self.language
+        if not language:
+            print_error(
+                case_num="N/A",
+                error_msg="No language specified",
+                detailed=True
+            )
+            return
+            
+        # Initialize history manager for this language
+        history_manager = self._initialize_history_manager(language)
+        if not history_manager:
+            print_error(
+                case_num="N/A",
+                error_msg="History tracking is not enabled.",
+                detailed=True
+            )
+            return
+            
+        try:
+            # Parse cases filter if provided
+            cases_filter = None
+            if cases_arg:
+                testcases = self.load_testcases()
+                total_cases = len(testcases["testcases"])
+                selected_cases = self._parse_cases_arg(cases_arg, total_cases)
+                cases_filter = list(selected_cases)
+                
+            # Initialize visualizer
+            visualizer = HistoryVisualizer(
+                challenge_dir=self.challenge_dir,
+                language=language
+            )
+            
+            # Generate and open visualization
+            title = f"{self.platform} - {self.challenge_path} - {language} Performance History"
+            html_path = visualizer.visualize(output_path=output_path)
+            
+            print_success(f"Visualization generated: {html_path}")
+            
+        except Exception as e:
+            print_error(
+                case_num="N/A",
+                error_msg=f"Error generating visualization: {str(e)}",
                 detailed=True,
                 traceback_str=traceback.format_exc()
             )

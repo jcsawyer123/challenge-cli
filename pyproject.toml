@@ -10,8 +10,9 @@ authors = [{ name="jcsawyer123", email="joshua@jcsawyer.me" }]
 dependencies = [
     "colorama",
     "psutil",
-    "argcomplete"
+    "typer[all]",
+    "click==8.1.7",  # Pin Click to a compatible version!
 ]
 
 [project.scripts]
-challenge-cli = "challenge_cli.cli:main"
+challenge-cli = "challenge_cli.cli:app"

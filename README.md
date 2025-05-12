@@ -20,8 +20,22 @@ cd challenge-cli
 pip install -e .
 
 # (Optional) Enable tab completion
-pip install argcomplete
-activate-global-python-argcomplete --user
+# The CLI now uses `typer` which provides built-in support for autocompletion.
+# To install autocompletion for your shell, run the following command
+# (replace SHELL_NAME with your shell, e.g., bash, zsh, fish):
+# challenge-cli --install-completion SHELL_NAME
+#
+# For example, for bash, you might add this to your ~/.bashrc:
+# eval "$(_CHALLENGE_CLI_COMPLETE=bash_source challenge-cli)"
+#
+# For zsh, you might add this to your ~/.zshrc:
+# eval "$(_CHALLENGE_CLI_COMPLETE=zsh_source challenge-cli)"
+#
+# For fish, you might add this to your ~/.config/fish/completions/challenge-cli.fish:
+# eval (env _CHALLENGE_CLI_COMPLETE=fish_source challenge-cli)
+#
+# Refer to the Typer documentation for more details on shell completion:
+# https://typer.tiangolo.com/tutorial/completion/
 ```
 
 ## Quick Start
@@ -135,7 +149,7 @@ challenges/
 
 - Python 3.7+
 - Docker
-- colorama, psutil, argcomplete
+- colorama, psutil, typer, rich
 
 ## Examples
 
