@@ -4,14 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "challenge_cli"
-version = "0.1.0"
-description = "A local coding challenge testing CLI"
+version = "0.2.0"
+description = "A modern coding challenge testing CLI with rich terminal output"
 authors = [{ name="jcsawyer123", email="joshua@jcsawyer.me" }]
 dependencies = [
     "colorama",
     "psutil",
     "typer[all]",
-    "click==8.1.7",  # Pin Click to a compatible version!
+    "click==8.1.7",  # Pin Click to a compatible version
+    "rich>=13.0.0",  # Ensure we have the latest Rich features
 ]
 
 [project.scripts]

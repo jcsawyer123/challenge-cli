@@ -25,7 +25,20 @@ from challenge_cli.output import (
     print_success,
     print_fail,
     print_divider,
+    # Add the new functions
+    print_snapshot_list,
+    print_snapshot_comparison,
+    print_performance_comparison,
+    print_visualization_generated,
+    get_progress_context,
+    console,
+    print_banner
 )
+
+# Use Rich components for better display
+from rich.panel import Panel
+from rich.syntax import Syntax
+from rich.table import Table
 
 TESTCASES_TEMPLATE = """{
     "testcases": [
@@ -358,89 +371,96 @@ class ChallengeTester:
             batch_case_nums.append(case_num)
 
         language_dir = self._get_language_dir(language)
-        start_time = time.time()
-        results = plugin.run_many(language_dir, function_name, batch_inputs)
-        total_time = time.time() - start_time
+        
+        # Use progress for batch operations
+        with get_progress_context("Running tests...") as progress:
+            task = progress.add_task(f"Testing {len(batch_inputs)} cases...", total=len(batch_inputs))
+            
+            start_time = time.time()
+            results = plugin.run_many(language_dir, function_name, batch_inputs)
+            total_time = time.time() - start_time
+            
+            total_passed = 0
+            total_run = len(batch_case_nums)
+            test_results = []
 
-        total_passed = 0
-        total_run = len(batch_case_nums)
-        test_results = []
+            for idx, (result, extra_stdout, stderr, exit_code, exec_time, max_rss_kb, profile_info) in enumerate(results):
+                progress.update(task, advance=1)
+                
+                case_num = batch_case_nums[idx]
+                input_values = batch_inputs[idx]
+                expected = batch_expected[idx]
+                error = None if exit_code == 0 else stderr
 
-        for idx, (result, extra_stdout, stderr, exit_code, exec_time, max_rss_kb, profile_info) in enumerate(results):
-            case_num = batch_case_nums[idx]
-            input_values = batch_inputs[idx]
-            expected = batch_expected[idx]
-            error = None if exit_code == 0 else stderr
+                if profile_info and "time_ms" in profile_info:
+                    time_ms = profile_info['time_ms']
+                    time_str = format_time(time_ms / 1000)
+                else:
+                    time_ms = None
+                    time_str = format_time(exec_time) if exec_time is not None else "N/A"
 
-            if profile_info and "time_ms" in profile_info:
-                time_ms = profile_info['time_ms']
-                time_str = format_time(time_ms / 1000)
-            else:
-                time_ms = None
-                time_str = format_time(exec_time) if exec_time is not None else "N/A"
+                if profile_info and "mem_bytes" in profile_info:
+                    mem_bytes = profile_info['mem_bytes']
+                    mem_str = format_memory(mem_bytes)
+                elif max_rss_kb is not None:
+                    mem_bytes = max_rss_kb * 1024
+                    mem_str = format_memory(mem_bytes)
+                else:
+                    mem_bytes = None
+                    mem_str = "N/A"
 
-            if profile_info and "mem_bytes" in profile_info:
-                mem_bytes = profile_info['mem_bytes']
-                mem_str = format_memory(mem_bytes)
-            elif max_rss_kb is not None:
-                mem_bytes = max_rss_kb * 1024
-                mem_str = format_memory(mem_bytes)
-            else:
-                mem_bytes = None
-                mem_str = "N/A"
+                test_result = {
+                    "case_num": case_num,
+                    "passed": False,
+                    "error": bool(error),
+                    "exec_time_ms": time_ms,
+                    "mem_bytes": mem_bytes,
+                    "result": result,
+                    "expected": expected
+                }
 
-            test_result = {
-                "case_num": case_num,
-                "passed": False,
-                "error": bool(error),
-                "exec_time_ms": time_ms,
-                "mem_bytes": mem_bytes,
-                "result": result,
-                "expected": expected
-            }
-
-            if error is None:
-                passed = self._compare_results(result, expected)
-                test_result["passed"] = passed
-                if passed:
-                    total_passed += 1
-                print_test_case_result(
-                    case_num=case_num,
-                    passed=passed,
-                    exec_time=time_str,
-                    memory=mem_str,
-                    result=result,
-                    expected=expected,
-                    stdout=extra_stdout if extra_stdout else None,
-                    input_values=input_values if detailed else None,
-                    detailed=detailed
-                )
-            else:
-                test_result["error_message"] = error
-                print_error(
-                    case_num=case_num,
-                    error_msg=error,
-                    stdout=extra_stdout if extra_stdout else None,
-                    detailed=detailed,
-                    traceback_str=stderr if detailed else None
-                )
-
-            test_results.append(test_result)
-
-            # Record performance metrics in history
-            if self.use_history and history_manager and not error and time_ms is not None:
-                try:
-                    history_manager.add_performance_record(
+                if error is None:
+                    passed = self._compare_results(result, expected)
+                    test_result["passed"] = passed
+                    if passed:
+                        total_passed += 1
+                    print_test_case_result(
                         case_num=case_num,
-                        metrics={
-                            "time_ms": time_ms,
-                            "mem_bytes": mem_bytes if mem_bytes is not None else 0
-                        },
-                        snapshot_id=snapshot_id
+                        passed=passed,
+                        exec_time=time_str,
+                        memory=mem_str,
+                        result=result,
+                        expected=expected,
+                        stdout=extra_stdout if extra_stdout else None,
+                        input_values=input_values if detailed else None,
+                        detailed=detailed
                     )
-                except Exception as e:
-                    if detailed:
-                        print_warning(f"Failed to record performance: {e}")
+                else:
+                    test_result["error_message"] = error
+                    print_error(
+                        case_num=case_num,
+                        error_msg=error,
+                        stdout=extra_stdout if extra_stdout else None,
+                        detailed=detailed,
+                        traceback_str=stderr if detailed else None
+                    )
+
+                test_results.append(test_result)
+
+                # Record performance metrics in history
+                if self.use_history and history_manager and not error and time_ms is not None:
+                    try:
+                        history_manager.add_performance_record(
+                            case_num=case_num,
+                            metrics={
+                                "time_ms": time_ms,
+                                "mem_bytes": mem_bytes if mem_bytes is not None else 0
+                            },
+                            snapshot_id=snapshot_id
+                        )
+                    except Exception as e:
+                        if detailed:
+                            print_warning(f"Failed to record performance: {e}")
 
         # Record test results in history
         if self.use_history and history_manager:
@@ -722,9 +742,8 @@ class ChallengeTester:
                 print_warning(f"No snapshots found for {language} in {self.platform}/{self.challenge_path}")
                 return
                 
-            print_warning(f"Solution history for {self.platform}/{self.challenge_path} ({language})")
-            print_divider()
-            
+            # Prepare snapshot data for the fancy table
+            snapshot_data = []
             for snapshot_id in snapshots:
                 snapshot_info = history_manager.get_snapshot_info(snapshot_id)
                 if not snapshot_info:
@@ -742,21 +761,21 @@ class ChallengeTester:
                 except:
                     pass
                     
-                # Format tag
-                if tag:
-                    tag = f"[{tag}]"
+                snapshot_data.append({
+                    'id': snapshot_id,
+                    'created_at': created_at,
+                    'tag': tag,
+                    'comment': comment,
+                    'function_name': function_name
+                })
+            
+            # Use the new fancy output function
+            print_snapshot_list(snapshot_data, language, f"{self.platform}/{self.challenge_path}")
+            
+            console.print()  # Empty line
+            print_info(f"Use 'challenge-cli history show -c {self.challenge_path} -s <snapshot_id>' to view a snapshot")
+            print_info(f"Use 'challenge-cli history compare -c {self.challenge_path} -1 <id1> -2 <id2>' to compare snapshots")
                     
-                print(f"{snapshot_id}  {created_at}  {tag}")
-                if comment:
-                    print(f"  Comment: {comment}")
-                if function_name:
-                    print(f"  Function: {function_name}")
-                print()
-                
-            print_divider()
-            print_info(f"Use 'challenge-cli history show {self.challenge_path} <snapshot_id>' to view a snapshot")
-            print_info(f"Use 'challenge-cli history compare {self.challenge_path} <id1> <id2>' to compare snapshots")
-                
         except Exception as e:
             print_error(
                 case_num="N/A",
@@ -764,7 +783,7 @@ class ChallengeTester:
                 detailed=True,
                 traceback_str=traceback.format_exc()
             )
-            
+
     def show_snapshot(self, snapshot_id):
         """
         Show the details of a specific snapshot.
@@ -816,28 +835,38 @@ class ChallengeTester:
             except:
                 pass
                 
-            print_warning(f"Snapshot: {snapshot_id}")
-            print_divider()
-            print(f"Created: {created_at}")
+            # Use Rich components for better display
+            from rich.panel import Panel
+            from rich.syntax import Syntax
+            from rich.table import Table
+            
+            # Snapshot info panel
+            info_content = f"""[bold]Snapshot:[/bold] {snapshot_id}
+    [bold]Created:[/bold] {created_at}"""
             if tag:
-                print(f"Tag: {tag}")
+                info_content += f"\n[bold]Tag:[/bold] [yellow]{tag}[/yellow]"
             if comment:
-                print(f"Comment: {comment}")
+                info_content += f"\n[bold]Comment:[/bold] {comment}"
             if function_name:
-                print(f"Function: {function_name}")
-            print_divider()
-            print("Solution Code:")
-            print_divider()
-            print(solution_code)
-            print_divider()
+                info_content += f"\n[bold]Function:[/bold] {function_name}"
+            
+            console.print(Panel(info_content, title="[bold blue]Snapshot Details[/bold blue]", border_style="blue"))
+            
+            # Solution code with syntax highlighting
+            syntax = Syntax(solution_code, "python", theme="monokai", line_numbers=True)
+            console.print(Panel(syntax, title="[bold blue]Solution Code[/bold blue]", border_style="blue"))
             
             # Get performance history for this snapshot
             performance_history = history_manager.get_performance_history()
             snapshot_performance = [p for p in performance_history if p.get("snapshot_id") == snapshot_id]
             
             if snapshot_performance:
-                print("Performance Metrics:")
-                print_divider()
+                from rich.box import ROUNDED
+                perf_table = Table(title="[bold]Performance Metrics[/bold]", box=ROUNDED)
+                perf_table.add_column("Case", style="cyan", width=8)
+                perf_table.add_column("Time", style="green", width=15)
+                perf_table.add_column("Memory", style="blue", width=15)
+                
                 for record in snapshot_performance:
                     case_num = record.get("case_num", "Unknown")
                     metrics = record.get("metrics", {})
@@ -847,34 +876,56 @@ class ChallengeTester:
                     time_str = format_time(time_ms / 1000) if time_ms is not None else "N/A"
                     mem_str = format_memory(mem_bytes) if mem_bytes is not None else "N/A"
                     
-                    print(f"Case {case_num}: Time: {time_str}, Memory: {mem_str}")
-                print_divider()
+                    perf_table.add_row(str(case_num), time_str, mem_str)
+                
+                console.print(perf_table)
                 
             # Get test results for this snapshot
             test_history = history_manager.get_test_history()
             snapshot_tests = [t for t in test_history if t.get("snapshot_id") == snapshot_id]
             
             if snapshot_tests:
-                print("Test Results:")
-                print_divider()
+                console.print()
+                console.print(Panel("[bold]Test Results[/bold]", border_style="blue"))
+                
                 for record in snapshot_tests:
                     results = record.get("results", [])
                     summary = record.get("summary", {})
                     total = summary.get("total", 0)
                     passed = summary.get("passed", 0)
                     
-                    print(f"Passed: {passed}/{total} test cases")
+                    # Summary bar
+                    from rich.progress import Progress, BarColumn, TextColumn
+                    progress = Progress(
+                        TextColumn("[bold]{task.description}"),
+                        BarColumn(),
+                        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                        console=console
+                    )
+                    
+                    with progress:
+                        task = progress.add_task(f"Passed {passed}/{total} test cases", total=total, completed=passed)
+                    
+                    # Individual test results
+                    test_table = Table(show_header=False, box=None)
+                    test_table.add_column("Case", style="cyan", width=10)
+                    test_table.add_column("Status", width=20)
+                    
                     for result in results:
                         case_num = result.get("case_num", "Unknown")
                         passed = result.get("passed", False)
                         error = result.get("error", False)
                         
-                        status = "✓ PASSED" if passed else "✗ FAILED"
                         if error:
-                            status = "! ERROR"
+                            status = "[red]✗ ERROR[/red]"
+                        elif passed:
+                            status = "[green]✓ PASSED[/green]"
+                        else:
+                            status = "[red]✗ FAILED[/red]"
                             
-                        print(f"Case {case_num}: {status}")
-                print_divider()
+                        test_table.add_row(f"Case {case_num}", status)
+                    
+                    console.print(test_table)
                 
         except Exception as e:
             print_error(
@@ -883,7 +934,7 @@ class ChallengeTester:
                 detailed=True,
                 traceback_str=traceback.format_exc()
             )
-            
+
     def compare_snapshots(self, snapshot_id1, snapshot_id2):
         """
         Compare two snapshots.
@@ -951,22 +1002,6 @@ class ChallengeTester:
             except:
                 pass
                 
-            # Display comparison header
-            print_warning(f"Comparing Snapshots")
-            print_divider()
-            print(f"Snapshot 1: {snapshot_id1}  ({created1})")
-            if info1.get("tag"):
-                print(f"          Tag: {info1['tag']}")
-            if info1.get("comment"):
-                print(f"          Comment: {info1['comment']}")
-                
-            print(f"Snapshot 2: {snapshot_id2}  ({created2})")
-            if info2.get("tag"):
-                print(f"          Tag: {info2['tag']}")
-            if info2.get("comment"):
-                print(f"          Comment: {info2['comment']}")
-            print_divider()
-            
             # Generate diff
             lines1 = solution1.splitlines()
             lines2 = solution2.splitlines()
@@ -978,21 +1013,22 @@ class ChallengeTester:
                 lineterm=""
             ))
             
-            if diff:
-                print("Differences:")
-                for line in diff:
-                    if line.startswith("+"):
-                        print(f"\033[92m{line}\033[0m")  # Green for additions
-                    elif line.startswith("-"):
-                        print(f"\033[91m{line}\033[0m")  # Red for deletions
-                    elif line.startswith("@@"):
-                        print(f"\033[96m{line}\033[0m")  # Cyan for location
-                    else:
-                        print(line)
-            else:
-                print("No differences found between the snapshots.")
-                
-            print_divider()
+            # Use the new fancy comparison display
+            print_snapshot_comparison(
+                {
+                    'id': snapshot_id1,
+                    'created_at': created1,
+                    'tag': info1.get('tag', ''),
+                    'comment': info1.get('comment', '')
+                },
+                {
+                    'id': snapshot_id2,
+                    'created_at': created2,
+                    'tag': info2.get('tag', ''),
+                    'comment': info2.get('comment', '')
+                },
+                diff
+            )
             
             # Compare performance if same language
             if language1 == language2:
@@ -1017,9 +1053,7 @@ class ChallengeTester:
                     # Compare performance for shared test cases
                     shared_cases = set(perf1_dict.keys()) & set(perf2_dict.keys())
                     if shared_cases:
-                        print("Performance Comparison:")
-                        print_divider()
-                        print(f"{'Case':<5}  {'Snapshot 1 Time':<15}  {'Snapshot 2 Time':<15}  {'Diff %':<8}  {'Snapshot 1 Mem':<15}  {'Snapshot 2 Mem':<15}  {'Diff %':<8}")
+                        performance_comparison_data = {}
                         
                         for case_num in sorted(shared_cases):
                             metrics1 = perf1_dict[case_num].get("metrics", {})
@@ -1041,15 +1075,28 @@ class ChallengeTester:
                                 time_diff_str = f"{time_diff_pct:+.2f}%"
                             else:
                                 time_diff_str = "N/A"
+                                time_diff_pct = 0
                                 
                             if mem1 and mem2:
                                 mem_diff_pct = ((mem2 - mem1) / mem1) * 100
                                 mem_diff_str = f"{mem_diff_pct:+.2f}%"
                             else:
                                 mem_diff_str = "N/A"
+                                mem_diff_pct = 0
                                 
-                            print(f"{case_num:<5}  {time1_str:<15}  {time2_str:<15}  {time_diff_str:<8}  {mem1_str:<15}  {mem2_str:<15}  {mem_diff_str:<8}")
-                
+                            performance_comparison_data[case_num] = {
+                                'time1_str': time1_str,
+                                'time2_str': time2_str,
+                                'time_diff_str': time_diff_str,
+                                'time_diff_pct': time_diff_pct,
+                                'mem1_str': mem1_str,
+                                'mem2_str': mem2_str,
+                                'mem_diff_str': mem_diff_str,
+                                'mem_diff_pct': mem_diff_pct
+                            }
+                        
+                        print_performance_comparison(performance_comparison_data)
+        
         except Exception as e:
             print_error(
                 case_num="N/A",
@@ -1057,7 +1104,7 @@ class ChallengeTester:
                 detailed=True,
                 traceback_str=traceback.format_exc()
             )
-            
+
     def restore_snapshot(self, snapshot_id, backup=False):
         """
         Restore solution from a snapshot.
@@ -1139,7 +1186,7 @@ class ChallengeTester:
                 detailed=True,
                 traceback_str=traceback.format_exc()
             )
-            
+
     def visualize_history(self, language=None, output_path=None, cases_arg=None):
         """
         Visualize performance and test history.
@@ -1169,25 +1216,35 @@ class ChallengeTester:
             return
             
         try:
-            # Parse cases filter if provided
-            cases_filter = None
-            if cases_arg:
-                testcases = self.load_testcases()
-                total_cases = len(testcases["testcases"])
-                selected_cases = self._parse_cases_arg(cases_arg, total_cases)
-                cases_filter = list(selected_cases)
+            # Use progress indicator for long operations
+            with get_progress_context("Generating visualization...") as progress:
+                task = progress.add_task("Processing history data...", total=3)
                 
-            # Initialize visualizer
-            visualizer = HistoryVisualizer(
-                challenge_dir=self.challenge_dir,
-                language=language
-            )
+                # Parse cases filter if provided
+                cases_filter = None
+                if cases_arg:
+                    testcases = self.load_testcases()
+                    total_cases = len(testcases["testcases"])
+                    selected_cases = self._parse_cases_arg(cases_arg, total_cases)
+                    cases_filter = list(selected_cases)
+                
+                progress.update(task, advance=1, description="Initializing visualizer...")
+                
+                # Initialize visualizer
+                visualizer = HistoryVisualizer(
+                    challenge_dir=self.challenge_dir,
+                    language=language
+                )
+                
+                progress.update(task, advance=1, description="Creating HTML visualization...")
+                
+                # Generate and open visualization
+                title = f"{self.platform} - {self.challenge_path} - {language} Performance History"
+                html_path = visualizer.visualize(output_path=output_path)
+                
+                progress.update(task, advance=1, description="Done!")
             
-            # Generate and open visualization
-            title = f"{self.platform} - {self.challenge_path} - {language} Performance History"
-            html_path = visualizer.visualize(output_path=output_path)
-            
-            print_success(f"Visualization generated: {html_path}")
+            print_visualization_generated(html_path)
             
         except Exception as e:
             print_error(
