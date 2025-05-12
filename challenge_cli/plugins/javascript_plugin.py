@@ -4,11 +4,35 @@ from .language_plugin import LanguagePlugin
 from .docker_utils import (
     ensure_docker_image,
     start_hot_container,
-    exec_in_hot_container,
+    execute_in_container,  # Use new name
 )
+from challenge_cli.config import DOCKER_IMAGES, SOLUTION_TEMPLATES
 
-# WRAPPER_TEMPLATE for JavaScript:
-JS_WRAPPER_TEMPLATE = """
+
+class JavaScriptPlugin(LanguagePlugin):
+    """
+    JavaScript language plugin for the Challenge CLI.
+    
+    Uses enhanced LanguagePlugin base class with common template functionality.
+    """
+    
+    name = "javascript"
+    docker_image = DOCKER_IMAGES.get('javascript', 'leetcode-javascript-runner:18')
+    dockerfile_path = os.path.join(os.path.dirname(__file__), "dockerfiles", "Dockerfile.javascript")
+    solution_filename = "solution.js"
+    
+    @staticmethod
+    def solution_template(function_name="solve"):
+        """Returns a template for a new JavaScript solution file."""
+        return SOLUTION_TEMPLATES['javascript'].format(function_name=function_name)
+    
+    def ensure_image(self):
+        """Ensure the Docker image is available (builds if needed)."""
+        ensure_docker_image(self.docker_image, self.dockerfile_path, context_dir=os.path.dirname(self.dockerfile_path))
+    
+    def generate_wrapper_template(self, function_name: str) -> str:
+        """Generate JavaScript wrapper for single test execution."""
+        return f"""
 const {{ Solution }} = require('./solution');
 
 // Process CLI arguments as JSON
@@ -31,15 +55,16 @@ const timeMs = Number(endTime - startTime) / 1_000_000;
 const memBytes = endMemory - startMemory;
 
 // Print profile info and result
-console.log(`LEETCODE_PROFILE: ${{JSON.stringify({{
+console.log(`{self.PROFILE_MARKER} ${{JSON.stringify({{
     time_ms: timeMs,
     mem_bytes: memBytes
 }})}}`);
 console.log(JSON.stringify(result));
 """
-
-# Test driver for batch execution
-JS_TEST_DRIVER_TEMPLATE = """
+    
+    def generate_test_driver_template(self, function_name: str) -> str:
+        """Generate JavaScript test driver for batch execution."""
+        return f"""
 const fs = require('fs');
 const {{ Solution }} = require('./solution');
 
@@ -70,244 +95,157 @@ try {{
             console.log(`PROFILE_TIME_MS: ${{timeMs}}`);
             console.log(`PROFILE_MEM_BYTES: ${{memBytes}}`);
         }} catch (error) {{
-            console.error(`FUNCTION_ERROR: ${{error.message}}`);
+            console.error(`{self.FUNCTION_ERROR_MARKER} ${{error.message}}`);
             console.log(JSON.stringify("ERROR_RESULT"));
             console.log(`PROFILE_TIME_MS: 0`);
             console.log(`PROFILE_MEM_BYTES: 0`);
         }}
-        console.log("---SEPARATOR---");
+        console.log("{self.SEPARATOR}");
     }}
-    console.log("---END_OUTPUT---");
+    console.log("{self.END_OUTPUT}");
 }} catch (error) {{
-    console.error(`PROFILE_ERROR: ${{error.message}}`);
-    console.log("---SEPARATOR---");
-    console.log("---END_OUTPUT---");
+    console.error(`{self.ERROR_MARKER} ${{error.message}}`);
+    console.log("{self.SEPARATOR}");
+    console.log("{self.END_OUTPUT}");
     process.exit(1);
 }}
 """
-
-class JavaScriptPlugin(LanguagePlugin):
-    """
-    JavaScript language plugin for the LeetCode CLI.
     
-    Uses a hot Docker container for fast repeated runs, injects a wrapper
-    for function-only profiling, and parses results with performance metrics.
-    
-    The wrapper template:
-    - Takes JSON args from process.argv
-    - Calls the user's function
-    - Measures function-only time and memory
-    - Prints LEETCODE_PROFILE marker
-    - Prints result as JSON
-    """
-
-    name = "javascript"
-    docker_image = "leetcode-javascript-runner:18"
-    dockerfile_path = os.path.join(os.path.dirname(__file__), "dockerfiles", "Dockerfile.javascript")
-    solution_filename = "solution.js"
-
-    @staticmethod
-    def solution_template(function_name="solve"):
-        """
-        Returns a template for a new JavaScript solution file.
-        """
-        return f"""/**
- * @class Solution
- */
-class Solution {{
-    /**
-     * @param {{number[]}} nums
-     * @param {{number}} target
-     * @return {{number[]}}
-     */
-    {function_name}(nums, target) {{
-        // Example: Two Sum implementation
-        const map = new Map();
-        
-        for (let i = 0; i < nums.length; i++) {{
-            const complement = target - nums[i];
-            if (map.has(complement)) {{
-                return [map.get(complement), i];
-            }}
-            map.set(nums[i], i);
-        }}
-        
-        return [];
-    }}
-}}
-
-module.exports = {{ Solution }};
-"""
-
-    def ensure_image(self):
-        """
-        Ensure the Docker image is available (builds if needed).
-        """
-        ensure_docker_image(self.docker_image, self.dockerfile_path, context_dir=os.path.dirname(self.dockerfile_path))
-
-    def _prepare_workspace(self, workdir, function_name):
-        """
-        Write the wrapper (main.js) into the workspace.
-        Returns the path to the wrapper file.
-        """
-        wrapper_code = JS_WRAPPER_TEMPLATE.format(function_name=function_name)
-        wrapper_path = os.path.join(workdir, "main.js")
-        with open(wrapper_path, "w") as f:
-            f.write(wrapper_code)
-        return wrapper_path
-
-    def _container_name(self, workdir):
-        return super()._container_name(workdir)
-
-    def run(self, workdir, function_name, input_args, input_data=None):
+    def run(self, workdir: str, function_name: str, input_args: list, input_data: str = None) -> tuple:
+        """Run a single test case."""
         self.ensure_image()
         wrapper_path = self._prepare_workspace(workdir, function_name)
         container_name = self._container_name(workdir)
         start_hot_container(self.docker_image, workdir, container_name)
+        
         command = ["node", "main.js"] + [json.dumps(arg) for arg in input_args]
-        stdout, stderr, exit_code = exec_in_hot_container(
+        stdout, stderr, exit_code = execute_in_container(
             container_name, command, input_data=input_data
         )
+        
         stdout_lines = stdout.rstrip().splitlines()
+        result, extra_stdout, profile_info = self._parse_profile_output(stdout_lines)
+        
+        self._cleanup_files(wrapper_path)
+        
+        return result, extra_stdout, stderr, exit_code, None, None, profile_info
+    
+    def run_many(self, workdir: str, function_name: str, input_args_list: list, input_data_list: list = None) -> list:
+        """Run multiple test cases efficiently."""
+        self.ensure_image()
+        container_name = self._container_name(workdir)
+        start_hot_container(self.docker_image, workdir, container_name)
+        
+        inputs_json_path = os.path.join(workdir, 'inputs.json')
+        driver_path = os.path.join(workdir, 'test_driver.js')
+        
+        try:
+            # Write inputs
+            with open(inputs_json_path, 'w') as f:
+                json.dump(input_args_list, f)
+            
+            # Write driver
+            driver_code = self.generate_test_driver_template(function_name)
+            with open(driver_path, 'w') as f:
+                f.write(driver_code)
+            
+            # Execute
+            command = ["node", "test_driver.js"]
+            stdout, stderr, exit_code = execute_in_container(
+                container_name, command, input_data=None
+            )
+            
+            # Parse results using common helper
+            return self._parse_batch_output(stdout, stderr, exit_code, input_args_list)
+            
+        finally:
+            self._cleanup_files(inputs_json_path, driver_path)
+    
+    def _prepare_workspace(self, workdir: str, function_name: str) -> str:
+        """Write the wrapper (main.js) into the workspace."""
+        wrapper_code = self.generate_wrapper_template(function_name)
+        wrapper_path = os.path.join(workdir, "main.js")
+        with open(wrapper_path, "w") as f:
+            f.write(wrapper_code)
+        return wrapper_path
+    
+    def _parse_profile_output(self, stdout_lines: list) -> tuple:
+        """Parse stdout to extract result and profile info."""
         profile_info = None
         result_line = ""
         extra_stdout = []
+        
         for line in stdout_lines:
-            if line.startswith("LEETCODE_PROFILE:"):
+            if line.startswith(self.PROFILE_MARKER):
                 try:
-                    profile_info = json.loads(line.replace("LEETCODE_PROFILE:", "").strip())
+                    profile_json = line.replace(self.PROFILE_MARKER, "").strip()
+                    profile_info = json.loads(profile_json)
                 except Exception:
                     profile_info = None
             else:
                 result_line = line
                 extra_stdout.append(line)
+        
+        # Remove the result line from extra stdout if it's the last line
         if extra_stdout and extra_stdout[-1] == result_line:
             extra_stdout = extra_stdout[:-1]
-        extra_stdout = "\n".join(extra_stdout)
+        
+        extra_stdout_str = "\n".join(extra_stdout)
+        
+        # Parse result
         try:
             result = json.loads(result_line)
         except Exception:
             result = result_line
-        try:
-            os.remove(wrapper_path)
-        except Exception:
-            pass
-        return result, extra_stdout, stderr, exit_code, None, None, profile_info
-
-    def run_many(self, workdir, function_name, input_args_list, input_data_list=None):
-        self.ensure_image()
-        container_name = self._container_name(workdir)
-        start_hot_container(self.docker_image, workdir, container_name)
-
-        inputs_json_filename = "inputs.json"
-        inputs_json_path = os.path.join(workdir, inputs_json_filename)
         
-        driver_filename = "test_driver.js"
-        driver_code_path = os.path.join(workdir, driver_filename)
+        return result, extra_stdout_str, profile_info
+    
+    def _parse_single_case_output(self, case_output: str, stderr: str, exit_code: int, case_index: int) -> tuple:
+        """Parse output for a single test case in batch execution."""
+        lines = case_output.splitlines()
+        if not lines:
+            return ("Malformed case output", "", "Empty output for case", 1, None, None, None)
         
-        final_results = []
-
+        parsed_result = "Error: Malformed case output"
+        profile_info = None
+        case_specific_stderr = ""
+        case_exit_code = 1
+        
         try:
-            # 1. Create inputs.json
-            inputs_json_str = json.dumps(input_args_list)
-            with open(inputs_json_path, "w") as f:
-                f.write(inputs_json_str)
-
-            # 2. Create test_driver.js
-            driver_code = JS_TEST_DRIVER_TEMPLATE.format(function_name=function_name)
-            with open(driver_code_path, "w") as f:
-                f.write(driver_code)
-
-            # 3. Execute the driver script
-            command = ["node", driver_filename]
-            stdout, stderr, exit_code = exec_in_hot_container(
-                container_name, command, input_data=None
-            )
-
-            # 4. Parse output
-            if exit_code != 0 and "PROFILE_ERROR:" in stderr:
-                # Driver failed to load inputs or other critical setup error
-                final_results.append(("Batch execution failed due to driver error", "", stderr, exit_code, None, None, None))
-            elif "---END_OUTPUT---" not in stdout:
-                # Malformed output, missing END_OUTPUT marker
-                error_message = "Execution failed or malformed output (missing ---END_OUTPUT---)"
-                if stdout.strip(): error_message += f"\nStdout: {stdout}"
-                if stderr.strip(): error_message += f"\nStderr: {stderr}"
-                final_results.append((error_message, "", stderr, exit_code, None, None, None))
-            else:
-                main_output_block = stdout.split("---END_OUTPUT---")[0].strip()
-                case_outputs_str_list = main_output_block.split("---SEPARATOR---")
-                
-                # Correlate stderr FUNCTION_ERROR messages if any
+            # Parse result
+            if lines[0] in ['""ERROR_RESULT""', '"ERROR_RESULT"']:
+                parsed_result = "Error in user function"
+                case_exit_code = 1
+                # Extract error message from stderr if available
                 stderr_lines = stderr.strip().splitlines()
-                function_error_messages = [line for line in stderr_lines if line.startswith("FUNCTION_ERROR:")]
-
-                for i, case_output_str in enumerate(case_outputs_str_list):
-                    if not case_output_str.strip():
-                        continue
-                        
-                    lines = case_output_str.strip().splitlines()
-                    if not lines:
-                        if i < len(input_args_list): # Avoid adding result if there are no more inputs
-                             final_results.append(("Malformed case output", "", "Empty output for case", 1, None, None, None))
-                        continue
-
-                    parsed_result = "Error: Malformed case output"
-                    profile_info = None
-                    case_specific_stderr = ""
-                    case_exit_code = 1 # Default to error for the case
-
-                    try:
-                        # Line 0: result_json or "ERROR_RESULT"
-                        if lines[0] == '""ERROR_RESULT""' or lines[0] == '"ERROR_RESULT"':
-                            parsed_result = "Error in user function"
-                            case_exit_code = 1
-                            # Try to find a relevant error message
-                            if i < len(function_error_messages):
-                                case_specific_stderr = function_error_messages[i]
-                            elif function_error_messages:
-                                case_specific_stderr = stderr # Fallback to global stderr
-                        else:
-                            parsed_result = json.loads(lines[0])
-                            case_exit_code = 0
-                        
-                        # Line 1: PROFILE_TIME_MS
-                        time_ms_str = lines[1].split("PROFILE_TIME_MS:", 1)[1].strip()
-                        time_ms = float(time_ms_str)
-                        
-                        # Line 2: PROFILE_MEM_BYTES
-                        mem_bytes_str = lines[2].split("PROFILE_MEM_BYTES:", 1)[1].strip()
-                        mem_bytes = int(mem_bytes_str)
-                        
-                        profile_info = {"time_ms": time_ms, "mem_bytes": mem_bytes}
-                    except Exception as e:
-                        # Parsing this specific case output failed.
-                        parsed_result = f"Error parsing case output: {str(e)}"
-                        case_specific_stderr = f"Original case output:\n{case_output_str}\nStderr:\n{stderr}"
-                        case_exit_code = 1
-                        profile_info = None # Ensure profile_info is None if parsing fails
-
-                    final_results.append((parsed_result, "", case_specific_stderr, case_exit_code, None, None, profile_info))
-                
-                # If there are more inputs than results, it implies later test cases failed to produce output.
-                if len(input_args_list) > len(final_results) and exit_code != 0:
-                    num_missing = len(input_args_list) - len(final_results)
-                    for _ in range(num_missing):
-                        final_results.append(
-                            ("Test case did not run or produce output (driver may have exited prematurely)",
-                             "", stderr, exit_code, None, None, None)
-                        )
-
-        finally:
-            if os.path.exists(inputs_json_path):
-                try:
-                    os.remove(inputs_json_path)
-                except Exception:
-                    pass
-            if os.path.exists(driver_code_path):
-                try:
-                    os.remove(driver_code_path)
-                except Exception:
-                    pass
+                for err_line in stderr_lines:
+                    if err_line.startswith(self.FUNCTION_ERROR_MARKER):
+                        case_specific_stderr = err_line
+                        break
+                if not case_specific_stderr:
+                    case_specific_stderr = stderr
+            else:
+                parsed_result = json.loads(lines[0])
+                case_exit_code = 0
+            
+            # Parse timing info
+            if len(lines) > 1 and lines[1].startswith("PROFILE_TIME_MS:"):
+                time_ms = float(lines[1].split(":", 1)[1].strip())
+            else:
+                time_ms = 0
+            
+            # Parse memory info
+            if len(lines) > 2 and lines[2].startswith("PROFILE_MEM_BYTES:"):
+                mem_bytes = int(lines[2].split(":", 1)[1].strip())
+            else:
+                mem_bytes = 0
+            
+            profile_info = {"time_ms": time_ms, "mem_bytes": mem_bytes}
+            
+        except Exception as e:
+            parsed_result = f"Error parsing case output: {str(e)}"
+            case_specific_stderr = f"Original case output:\n{case_output}\nStderr:\n{stderr}"
+            case_exit_code = 1
+            profile_info = None
         
-        return final_results
+        return (parsed_result, "", case_specific_stderr, case_exit_code, None, None, profile_info)

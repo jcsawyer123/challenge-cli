@@ -1,6 +1,3 @@
-# challenge_cli/output.py
-# Refactored version focusing on SRP and DRY using Rich.
-
 from typing import Optional, List, Dict, Any, Union
 
 from rich import print as rprint
@@ -129,19 +126,20 @@ def print_divider(title: Optional[str] = None):
 # ==============================================================================
 
 def print_info(msg: str):
-    """Print an informational message."""
+    """Print an informational message (neutral information)."""
     _print_status_message("ℹ", msg, INFO_STYLE)
 
 def print_warning(msg: str):
-    """Print a warning message."""
+    """Print a warning message (caution but not error)."""
     _print_status_message("⚠", msg, WARNING_STYLE)
 
 def print_success(msg: str):
-    """Print a success message."""
+    """Print a success message (operation completed successfully)."""
     _print_status_message("✓", msg, SUCCESS_STYLE)
 
-def print_fail(msg: str):
-    """Print a failure message."""
+# Renamed for clarity:
+def print_failure(msg: str):
+    """Print a failure message (operation failed, but not a code error)."""
     _print_status_message("✗", msg, FAIL_STYLE)
 
 # ==============================================================================
@@ -200,7 +198,7 @@ def print_test_case_result(
     
     _print_stdout_panel(stdout, "Stdout", MAGENTA_STYLE)
 
-def print_error(
+def print_test_error(
     case_num: int,
     error_msg: str,
     lineno: Optional[int] = None,
@@ -209,7 +207,7 @@ def print_error(
     detailed: bool = False,
     traceback_str: Optional[str] = None
 ):
-    """Display error information in a formatted panel."""
+    """Display error information for a test case (replaced print_error)."""
     error_content = Text.assemble(
         ("Test Case ", YELLOW_STYLE),
         (str(case_num), YELLOW_STYLE + BOLD_STYLE),
@@ -237,9 +235,7 @@ def print_error(
 
 def print_summary(total_passed: int, total_run: int, selected: int, total: int):
     """Display test summary with progress visualization."""
-    # Create progress bar visualization (Note: Progress is best used with 'with')
-    # This direct printing might not look as intended compared to using it as a context manager.
-    # Consider refactoring how progress is displayed if this isn't sufficient.
+    # Create progress bar visualization
     progress_bar = Progress(
         TextColumn("[bold]{task.description}"),
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
@@ -250,7 +246,7 @@ def print_summary(total_passed: int, total_run: int, selected: int, total: int):
         total=total_run,
         completed=total_passed
     )
-    console.print(progress_bar) # Print the progress bar state once
+    console.print(progress_bar)
 
     # Create summary panel
     summary_content = Text.assemble(
@@ -351,6 +347,8 @@ def print_complexity_footer():
     """Print complexity analysis footer."""
     console.print(Rule(style=INFO_STYLE))
 
+# Rest of the functions remain the same...
+
 # ==============================================================================
 # Snapshot / History Output
 # ==============================================================================
@@ -364,7 +362,7 @@ def print_snapshot_list(snapshots: List[Dict[str, Any]], language: str, challeng
     table.add_column("Snapshot ID", style=CYAN_STYLE, width=25)
     table.add_column("Created", style=SUCCESS_STYLE, width=20)
     table.add_column("Tag", style=YELLOW_STYLE, width=15)
-    table.add_column("Comment", style=WHITE_STYLE, width=40, overflow="fold") # Added overflow
+    table.add_column("Comment", style=WHITE_STYLE, width=40, overflow="fold")
     
     for snapshot in snapshots:
         table.add_row(
@@ -414,16 +412,16 @@ def print_performance_comparison(performance_data: Dict[int, Dict[str, Any]]):
     table = _create_table(title="[bold]Performance Comparison[/bold]")
     
     table.add_column("Case", style=CYAN_STYLE, width=8)
-    table.add_column("Snap 1 Time", style=SUCCESS_STYLE, width=15) # Shortened header
-    table.add_column("Snap 2 Time", style=SUCCESS_STYLE, width=15) # Shortened header
-    table.add_column("Time Diff %", style=YELLOW_STYLE, width=12) # Shortened header
-    table.add_column("Snap 1 Mem", style=INFO_STYLE, width=15) # Shortened header
-    table.add_column("Snap 2 Mem", style=INFO_STYLE, width=15) # Shortened header
-    table.add_column("Mem Diff %", style=YELLOW_STYLE, width=12) # Shortened header
+    table.add_column("Snap 1 Time", style=SUCCESS_STYLE, width=15)
+    table.add_column("Snap 2 Time", style=SUCCESS_STYLE, width=15)
+    table.add_column("Time Diff %", style=YELLOW_STYLE, width=12)
+    table.add_column("Snap 1 Mem", style=INFO_STYLE, width=15)
+    table.add_column("Snap 2 Mem", style=INFO_STYLE, width=15)
+    table.add_column("Mem Diff %", style=YELLOW_STYLE, width=12)
     
     for case_num, data in performance_data.items():
-        time_diff_pct = data.get('time_diff_pct', 0) # Handle potential missing key
-        mem_diff_pct = data.get('mem_diff_pct', 0)   # Handle potential missing key
+        time_diff_pct = data.get('time_diff_pct', 0)
+        mem_diff_pct = data.get('mem_diff_pct', 0)
         
         time_diff_color = "green" if time_diff_pct < 0 else "red" if time_diff_pct > 0 else "white"
         mem_diff_color = "green" if mem_diff_pct < 0 else "red" if mem_diff_pct > 0 else "white"
@@ -460,6 +458,14 @@ def print_visualization_generated(path: str):
     ))
 
 # ==============================================================================
+# Backwards Compatibility
+# ==============================================================================
+
+# Deprecated: Use print_failure for operation failures, print_test_error for test errors
+print_fail = print_failure
+print_error = print_test_error  # This is what tester.py imports
+
+# ==============================================================================
 # Progress Indicator
 # ==============================================================================
 
@@ -469,5 +475,5 @@ def get_progress_context(description: str) -> Progress:
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=console,
-        transient=True # Clears progress on exit
+        transient=True
     )

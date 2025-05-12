@@ -1,9 +1,11 @@
 import os
 from abc import ABC, abstractmethod
+from typing import List, Tuple, Optional, Any
+
 
 class LanguagePlugin(ABC):
     """
-    Base class for all language plugins.
+    Base class for all language plugins with common template functionality.
 
     Each plugin must implement or override the following:
 
@@ -18,6 +20,13 @@ class LanguagePlugin(ABC):
     docker_image = None
     dockerfile_path = None
     solution_filename = None
+    
+    # Common markers used across all languages
+    PROFILE_MARKER = "LEETCODE_PROFILE:"
+    ERROR_MARKER = "PROFILE_ERROR:"
+    FUNCTION_ERROR_MARKER = "FUNCTION_ERROR:"
+    SEPARATOR = "---SEPARATOR---"
+    END_OUTPUT = "---END_OUTPUT---"
 
     @staticmethod
     @abstractmethod
@@ -40,6 +49,20 @@ class LanguagePlugin(ABC):
         Should build the image if it does not exist.
         """
         pass
+
+    def generate_wrapper_template(self, function_name: str) -> str:
+        """
+        Generate the wrapper template for single test execution.
+        Can be overridden by subclasses for language-specific needs.
+        """
+        raise NotImplementedError("Subclasses must implement generate_wrapper_template")
+    
+    def generate_test_driver_template(self, function_name: str) -> str:
+        """
+        Generate the test driver template for batch execution.
+        Can be overridden by subclasses for language-specific needs.
+        """
+        raise NotImplementedError("Subclasses must implement generate_test_driver_template")
 
     @abstractmethod
     def run(self, workdir, function_name, input_args, input_data=None):
@@ -105,3 +128,76 @@ class LanguagePlugin(ABC):
         safe_challenge = challenge_path.replace("/", "-").replace("\\", "-")
         
         return f"challenge-{platform}-{safe_challenge}-{self.name}-{image_tag}"
+    
+    # Common helper methods that can be used by subclasses
+    
+    def _cleanup_files(self, *file_paths):
+        """Remove temporary files, ignoring errors."""
+        for file_path in file_paths:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except OSError:
+                pass
+    
+    def _create_error_results(self, num_inputs: int, stdout: str, stderr: str, exit_code: int) -> List[Tuple]:
+        """Create error results for all inputs when batch execution fails."""
+        return [(None, stdout, stderr, exit_code, None, None, None) for _ in range(num_inputs)]
+    
+    def _parse_batch_output(self, stdout: str, stderr: str, exit_code: int, batch_inputs: list) -> List[Tuple]:
+        """
+        Common batch output parsing logic.
+        Can be overridden by subclasses for language-specific needs.
+        """
+        final_results = []
+        
+        # Check for critical errors
+        if exit_code != 0 and self.ERROR_MARKER in stderr:
+            final_results.append((
+                "Batch execution failed due to driver error", 
+                "", stderr, exit_code, None, None, None
+            ))
+            return final_results
+        
+        if self.END_OUTPUT not in stdout:
+            error_message = "Execution failed or malformed output (missing end marker)"
+            if stdout.strip():
+                error_message += f"\nStdout: {stdout}"
+            if stderr.strip():
+                error_message += f"\nStderr: {stderr}"
+            final_results.append((error_message, "", stderr, exit_code, None, None, None))
+            return final_results
+        
+        # Extract main output
+        main_output = stdout.split(self.END_OUTPUT)[0].strip()
+        case_outputs = main_output.split(self.SEPARATOR)
+        
+        # Parse each case
+        for i, case_output in enumerate(case_outputs):
+            if not case_output.strip():
+                continue
+                
+            if i >= len(batch_inputs):
+                break
+                
+            result = self._parse_single_case_output(
+                case_output.strip(), stderr, exit_code, i
+            )
+            final_results.append(result)
+        
+        # Fill in missing results
+        while len(final_results) < len(batch_inputs):
+            final_results.append((
+                "Test case did not run or produce output",
+                "", stderr, exit_code, None, None, None
+            ))
+        
+        return final_results[:len(batch_inputs)]
+    
+    @abstractmethod
+    def _parse_single_case_output(self, case_output: str, stderr: str, exit_code: int, case_index: int) -> Tuple:
+        """
+        Parse output for a single test case in batch execution.
+        Must be implemented by subclasses.
+        """
+        raise NotImplementedError("Subclasses must implement _parse_single_case_output")

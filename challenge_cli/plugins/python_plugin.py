@@ -4,11 +4,35 @@ from .language_plugin import LanguagePlugin
 from .docker_utils import (
     ensure_docker_image,
     start_hot_container,
-    exec_in_hot_container,
+    execute_in_container,  # Use new name
 )
+from challenge_cli.config import DOCKER_IMAGES, SOLUTION_TEMPLATES
 
-# WRAPPER_TEMPLATE: Injected into the workspace as main.py.
-WRAPPER_TEMPLATE = """
+
+class PythonPlugin(LanguagePlugin):
+    """
+    Python language plugin for the Challenge CLI.
+    
+    Uses enhanced LanguagePlugin base class with common template functionality.
+    """
+    
+    name = "python"
+    docker_image = DOCKER_IMAGES.get('python', 'leetcode-python-runner:3.12')
+    dockerfile_path = os.path.join(os.path.dirname(__file__), "dockerfiles", "Dockerfile.python")
+    solution_filename = "solution.py"
+    
+    @staticmethod
+    def solution_template(function_name="solve"):
+        """Returns a template for a new Python solution file."""
+        return SOLUTION_TEMPLATES['python'].format(function_name=function_name)
+    
+    def ensure_image(self):
+        """Ensure the Docker image is available (builds if needed)."""
+        ensure_docker_image(self.docker_image, self.dockerfile_path, context_dir=os.path.dirname(self.dockerfile_path))
+    
+    def generate_wrapper_template(self, function_name: str) -> str:
+        """Generate Python wrapper for single test execution."""
+        return f"""
 import sys
 import json
 import time
@@ -24,75 +48,22 @@ if __name__ == "__main__":
     t1 = time.perf_counter()
     current, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
-    print("LEETCODE_PROFILE: " + json.dumps({{
+    print("{self.PROFILE_MARKER} " + json.dumps({{
         "time_ms": (t1-t0)*1000,
         "mem_bytes": peak
     }}))
     print(json.dumps(result))
 """
-
-class PythonPlugin(LanguagePlugin):
-    """
-    Python language plugin for the LeetCode CLI.
     
-    Uses a hot Docker container for fast repeated runs, injects a wrapper
-    for function-only profiling, and parses results with performance metrics.
-    
-    The wrapper template:
-    - Parses input args as JSON from sys.argv[1:]
-    - Calls the user's function/method
-    - Measures function-only time and memory (tracemalloc)
-    - Prints a marker line: LEETCODE_PROFILE: {"time_ms": float, "mem_bytes": int}
-    - Prints the function result as JSON
-    """
-
-    name = "python"
-    docker_image = "leetcode-python-runner:3.12"
-    dockerfile_path = os.path.join(os.path.dirname(__file__), "dockerfiles", "Dockerfile.python")
-    solution_filename = "solution.py"
-
-    @staticmethod
-    def solution_template(function_name="solve"):
-        """
-        Returns a template for a new Python solution file.
-        """
-        return f"""class Solution:
-    def {function_name}(self, param1, param2):
-        \"\"\"
-        Replace this with the actual function signature from LeetCode.
-        For example:
-        def twoSum(self, nums: List[int], target: int) -> List[int]:
-            # Your solution here
-            pass
-        \"\"\"
-        pass
-"""
-
-    def ensure_image(self):
-        """
-        Ensure the Docker image is available (builds if needed).
-        """
-        ensure_docker_image(self.docker_image, self.dockerfile_path, context_dir=os.path.dirname(self.dockerfile_path))
-
-    def _prepare_workspace(self, workdir, function_name):
-        """
-        Write the wrapper (main.py) into the workspace.
-        Returns the path to the wrapper file.
-        """
-        wrapper_code = WRAPPER_TEMPLATE.format(function_name=function_name)
-        wrapper_path = os.path.join(workdir, "main.py")
-        with open(wrapper_path, "w") as f:
-            f.write(wrapper_code)
-        return wrapper_path
-
-    def test_driver_template(self, function_name, solution_filename):
-        solution_module_name = solution_filename.split('.')[0]
+    def generate_test_driver_template(self, function_name: str) -> str:
+        """Generate Python test driver for batch execution."""
+        solution_module = self.solution_filename.split('.')[0]
         return f"""
 import sys
 import json
 import time
 import tracemalloc
-from {solution_module_name} import Solution
+from {solution_module} import Solution
 
 if __name__ == "__main__":
     batch_inputs = []
@@ -101,9 +72,9 @@ if __name__ == "__main__":
             batch_inputs_json = f.read()
         batch_inputs = json.loads(batch_inputs_json)
     except Exception as e:
-        print(f"PROFILE_ERROR:Error loading or parsing inputs.json: {{e}}", file=sys.stderr)
-        print("---SEPARATOR---", file=sys.stdout)
-        print("---END_OUTPUT---", file=sys.stdout)
+        print(f"{self.ERROR_MARKER}Error loading or parsing inputs.json: {{e}}", file=sys.stderr)
+        print("{self.SEPARATOR}", file=sys.stdout)
+        print("{self.END_OUTPUT}", file=sys.stdout)
         sys.exit(1)
 
     sol = Solution()
@@ -126,174 +97,154 @@ if __name__ == "__main__":
             case_stdout_lines.append(f"PROFILE_MEM_BYTES: {{peak}}")
 
         except Exception as call_e:
-            # Ensure tracemalloc is stopped if it was started
             if tracemalloc.is_tracing():
                 tracemalloc.stop()
-            print(f"FUNCTION_ERROR: Test case {{i}}: {{call_e}}", file=sys.stderr)
-            case_stdout_lines.append(json.dumps("ERROR_RESULT")) # Standardized error result
+            print(f"{self.FUNCTION_ERROR_MARKER} Test case {{i}}: {{call_e}}", file=sys.stderr)
+            case_stdout_lines.append(json.dumps("ERROR_RESULT"))
             case_stdout_lines.append(f"PROFILE_TIME_MS: 0")
             case_stdout_lines.append(f"PROFILE_MEM_BYTES: 0")
         
         results_output.append("\\n".join(case_stdout_lines))
 
-    print("\\n---SEPARATOR---\\n".join(results_output))
-    print("---END_OUTPUT---")
+    print(f"\\n{self.SEPARATOR}\\n".join(results_output))
+    print("{self.END_OUTPUT}")
 """
-
-    def _container_name(self, workdir):
-        return super()._container_name(workdir)
-
-    def run(self, workdir, function_name, input_args, input_data=None):
+    
+    def run(self, workdir: str, function_name: str, input_args: list, input_data: str = None) -> tuple:
+        """Run a single test case."""
         self.ensure_image()
         wrapper_path = self._prepare_workspace(workdir, function_name)
         container_name = self._container_name(workdir)
         start_hot_container(self.docker_image, workdir, container_name)
+        
         command = ["python", "main.py"] + [json.dumps(arg) for arg in input_args]
-        stdout, stderr, exit_code = exec_in_hot_container(
+        stdout, stderr, exit_code = execute_in_container(
             container_name, command, input_data=input_data
         )
+        
         stdout_lines = stdout.rstrip().splitlines()
+        result, extra_stdout, profile_info = self._parse_profile_output(stdout_lines)
+        
+        self._cleanup_files(wrapper_path)
+        
+        return result, extra_stdout, stderr, exit_code, None, None, profile_info
+    
+    def run_many(self, workdir: str, function_name: str, input_args_list: list, input_data_list: list = None) -> list:
+        """Run multiple test cases efficiently."""
+        self.ensure_image()
+        container_name = self._container_name(workdir)
+        start_hot_container(self.docker_image, workdir, container_name)
+        
+        inputs_json_path = os.path.join(workdir, 'inputs.json')
+        driver_path = os.path.join(workdir, 'test_driver.py')
+        
+        try:
+            # Write inputs
+            with open(inputs_json_path, 'w') as f:
+                json.dump(input_args_list, f)
+            
+            # Write driver
+            driver_code = self.generate_test_driver_template(function_name)
+            with open(driver_path, 'w') as f:
+                f.write(driver_code)
+            
+            # Execute
+            command = ["python", "test_driver.py"]
+            stdout, stderr, exit_code = execute_in_container(
+                container_name, command, input_data=None
+            )
+            
+            # Parse results using common helper
+            return self._parse_batch_output(stdout, stderr, exit_code, input_args_list)
+            
+        finally:
+            self._cleanup_files(inputs_json_path, driver_path)
+    
+    def _prepare_workspace(self, workdir: str, function_name: str) -> str:
+        """Write the wrapper (main.py) into the workspace."""
+        wrapper_code = self.generate_wrapper_template(function_name)
+        wrapper_path = os.path.join(workdir, "main.py")
+        with open(wrapper_path, "w") as f:
+            f.write(wrapper_code)
+        return wrapper_path
+    
+    def _parse_profile_output(self, stdout_lines: list) -> tuple:
+        """Parse stdout to extract result and profile info."""
         profile_info = None
         result_line = ""
         extra_stdout = []
+        
         for line in stdout_lines:
-            if line.startswith("LEETCODE_PROFILE:"):
+            if line.startswith(self.PROFILE_MARKER):
                 try:
-                    profile_info = json.loads(line.replace("LEETCODE_PROFILE:", "").strip())
+                    profile_json = line.replace(self.PROFILE_MARKER, "").strip()
+                    profile_info = json.loads(profile_json)
                 except Exception:
                     profile_info = None
             else:
                 result_line = line
                 extra_stdout.append(line)
+        
+        # Remove the result line from extra stdout if it's the last line
         if extra_stdout and extra_stdout[-1] == result_line:
             extra_stdout = extra_stdout[:-1]
-        extra_stdout = "\n".join(extra_stdout)
+        
+        extra_stdout_str = "\n".join(extra_stdout)
+        
+        # Parse result
         try:
             result = json.loads(result_line)
         except Exception:
             result = result_line
-        try:
-            os.remove(wrapper_path)
-        except Exception:
-            pass
-        return result, extra_stdout, stderr, exit_code, None, None, profile_info
-
-    def run_many(self, workdir, function_name, input_args_list, input_data_list=None):
-        self.ensure_image()
-        container_name = self._container_name(workdir)
-        start_hot_container(self.docker_image, workdir, container_name)
-
-        inputs_json_filename = "inputs.json"
-        inputs_json_path = os.path.join(workdir, inputs_json_filename)
         
-        driver_filename = "test_driver.py"
-        driver_code_path = os.path.join(workdir, driver_filename)
+        return result, extra_stdout_str, profile_info
+    
+    def _parse_single_case_output(self, case_output: str, stderr: str, exit_code: int, case_index: int) -> tuple:
+        """Parse output for a single test case in batch execution."""
+        lines = case_output.splitlines()
+        if not lines:
+            return ("Malformed case output", "", "Empty output for case", 1, None, None, None)
         
-        final_results = []
-
+        parsed_result = "Error: Malformed case output"
+        profile_info = None
+        case_specific_stderr = ""
+        case_exit_code = 1
+        
         try:
-            # 1. Create inputs.json
-            inputs_json_str = json.dumps(input_args_list)
-            with open(inputs_json_path, "w") as f:
-                f.write(inputs_json_str)
-
-            # 2. Create test_driver.py
-            driver_code = self.test_driver_template(function_name, self.solution_filename)
-            with open(driver_code_path, "w") as f:
-                f.write(driver_code)
-
-            # 3. Execute the driver script
-            # solution_code_path is os.path.join(workdir, self.solution_filename)
-            # All necessary files (solution.py, test_driver.py, inputs.json) are in workdir.
-            command = ["python", driver_filename]
-            stdout, stderr, exit_code = exec_in_hot_container(
-                container_name, command, input_data=None
-            )
-
-            # 4. Parse output
-            if exit_code != 0 and "PROFILE_ERROR:" in stderr:
-                # Driver failed to load inputs or other critical setup error
-                final_results.append(("Batch execution failed due to driver error", "", stderr, exit_code, None, None, None))
-            elif "---END_OUTPUT---" not in stdout:
-                # Malformed output, missing END_OUTPUT marker
-                error_message = "Execution failed or malformed output (missing ---END_OUTPUT---)"
-                if stdout.strip(): error_message += f"\nStdout: {stdout}"
-                if stderr.strip(): error_message += f"\nStderr: {stderr}"
-                final_results.append((error_message, "", stderr, exit_code, None, None, None))
-            else:
-                main_output_block = stdout.split("---END_OUTPUT---")[0].strip()
-                case_outputs_str_list = main_output_block.split("---SEPARATOR---")
-                
-                # Correlate stderr FUNCTION_ERROR messages if any
-                # This is a simple correlation; complex scenarios might need more robust parsing.
+            # Parse result
+            if lines[0] in ['""ERROR_RESULT""', '"ERROR_RESULT"']:
+                parsed_result = "Error in user function"
+                case_exit_code = 1
+                # Extract error message from stderr if available
                 stderr_lines = stderr.strip().splitlines()
-                function_error_messages = [line for line in stderr_lines if line.startswith("FUNCTION_ERROR:")]
-
-                for i, case_output_str in enumerate(case_outputs_str_list):
-                    lines = case_output_str.strip().splitlines()
-                    if not lines:
-                        if i < len(input_args_list): # Avoid adding result if there are no more inputs
-                             final_results.append(("Malformed case output", "", "Empty output for case", 1, None, None, None))
-                        continue
-
-                    parsed_result = "Error: Malformed case output"
-                    profile_info = None
-                    case_specific_stderr = ""
-                    case_exit_code = 1 # Default to error for the case
-
-                    try:
-                        # Line 0: result_json or "ERROR_RESULT"
-                        if lines[0] == '""ERROR_RESULT""' or lines[0] == '"ERROR_RESULT"': # Handle potential extra quotes from json.dumps("ERROR_RESULT")
-                            parsed_result = "Error in user function"
-                            case_exit_code = 1
-                            # Try to find a relevant error message
-                            if i < len(function_error_messages):
-                                case_specific_stderr = function_error_messages[i]
-                            elif function_error_messages: # If fewer errors than cases, assign last one or general stderr
-                                case_specific_stderr = stderr # Fallback to global stderr
-                        else:
-                            parsed_result = json.loads(lines[0])
-                            case_exit_code = 0
-                        
-                        # Line 1: PROFILE_TIME_MS
-                        time_ms_str = lines[1].split("PROFILE_TIME_MS:", 1)[1].strip()
-                        time_ms = float(time_ms_str)
-                        
-                        # Line 2: PROFILE_MEM_BYTES
-                        mem_bytes_str = lines[2].split("PROFILE_MEM_BYTES:", 1)[1].strip()
-                        mem_bytes = int(mem_bytes_str)
-                        
-                        profile_info = {"time_ms": time_ms, "mem_bytes": mem_bytes}
-                    except Exception as e:
-                        # Parsing this specific case output failed.
-                        parsed_result = f"Error parsing case output: {str(e)}"
-                        case_specific_stderr = f"Original case output:\n{case_output_str}\nStderr:\n{stderr}"
-                        case_exit_code = 1
-                        profile_info = None # Ensure profile_info is None if parsing fails
-
-                    final_results.append((parsed_result, "", case_specific_stderr, case_exit_code, None, None, profile_info))
-                
-                # If there are more inputs than results, it implies later test cases failed to produce output.
-                # This can happen if the driver script exits prematurely after some successful cases.
-                # The global exit_code and stderr would be important here.
-                if len(input_args_list) > len(final_results) and exit_code != 0:
-                    num_missing = len(input_args_list) - len(final_results)
-                    for _ in range(num_missing):
-                        final_results.append(
-                            ("Test case did not run or produce output (driver may have exited prematurely)",
-                             "", stderr, exit_code, None, None, None)
-                        )
-
-        finally:
-            if os.path.exists(inputs_json_path):
-                try:
-                    os.remove(inputs_json_path)
-                except Exception:
-                    pass
-            if os.path.exists(driver_code_path):
-                try:
-                    os.remove(driver_code_path)
-                except Exception:
-                    pass
+                for err_line in stderr_lines:
+                    if err_line.startswith(self.FUNCTION_ERROR_MARKER) and f"Test case {case_index}" in err_line:
+                        case_specific_stderr = err_line
+                        break
+                if not case_specific_stderr:
+                    case_specific_stderr = stderr
+            else:
+                parsed_result = json.loads(lines[0])
+                case_exit_code = 0
+            
+            # Parse timing info
+            if len(lines) > 1 and lines[1].startswith("PROFILE_TIME_MS:"):
+                time_ms = float(lines[1].split(":", 1)[1].strip())
+            else:
+                time_ms = 0
+            
+            # Parse memory info
+            if len(lines) > 2 and lines[2].startswith("PROFILE_MEM_BYTES:"):
+                mem_bytes = int(lines[2].split(":", 1)[1].strip())
+            else:
+                mem_bytes = 0
+            
+            profile_info = {"time_ms": time_ms, "mem_bytes": mem_bytes}
+            
+        except Exception as e:
+            parsed_result = f"Error parsing case output: {str(e)}"
+            case_specific_stderr = f"Original case output:\n{case_output}\nStderr:\n{stderr}"
+            case_exit_code = 1
+            profile_info = None
         
-        return final_results
+        return (parsed_result, "", case_specific_stderr, case_exit_code, None, None, profile_info)
