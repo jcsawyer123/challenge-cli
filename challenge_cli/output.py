@@ -13,6 +13,8 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
+from rich.markdown import Markdown
+from rich.console import Group
 
 # ==============================================================================
 # Constants & Global Console
@@ -187,7 +189,7 @@ def print_test_case_result(
         table.add_row("Output:", str(result))
         
         # Create panel with summary and table
-        content = Text.assemble(summary, "\n\n", table)
+        content = Group(summary, table)
         panel = _create_panel(
             content,
             border_style=SUCCESS_STYLE if passed else FAIL_STYLE,
@@ -208,7 +210,7 @@ def print_test_error(
     detailed: bool = False,
     traceback_str: Optional[str] = None
 ):
-    """Display error information for a test case (replaced print_error)."""
+
     error_content = Text.assemble(
         ("Test Case ", YELLOW_STYLE),
         (str(case_num), YELLOW_STYLE + BOLD_STYLE),
@@ -217,22 +219,41 @@ def print_test_error(
         ("\n\n", "default"),
         (error_msg, FAIL_STYLE)
     )
-    
     if lineno and line_content:
         error_content.append(f"\n\nat line {lineno}: ", style=YELLOW_STYLE)
         error_content.append(line_content, style=WHITE_STYLE)
-    
+
+    # Main error panel
     console.print(_create_panel(
         error_content,
         title="[red]Error[/red]",
         border_style=FAIL_STYLE,
         padding=(1, 2)
     ))
-    
-    if detailed:
-        _print_traceback_panel(traceback_str)
-    
-    _print_stdout_panel(stdout, "Stdout before error", MAGENTA_STYLE)
+
+    # Traceback panel (scrollable if long)
+    if detailed and traceback_str:
+        syntax = Syntax(traceback_str, "python", theme="monokai", line_numbers=True, word_wrap=True)
+        console.print(_create_panel(
+            syntax,
+            title="[red]Traceback[/red]",
+            border_style=FAIL_STYLE,
+            padding=(1, 2)
+        ))
+
+    # Stdout panel
+    if stdout:
+        lines = stdout.splitlines()
+        sample_content = "\n".join(lines[:10])
+        if len(lines) > 10:
+            sample_content += f"\n[dim]... ({len(lines) - 10} more lines)[/dim]"
+        console.print(_create_panel(
+            sample_content,
+            title="[magenta]Stdout before error[/magenta]",
+            border_style=MAGENTA_STYLE,
+            padding=(0, 1)
+        ))
+
 
 def print_summary(total_passed: int, total_run: int, selected: int, total: int):
     """Display test summary with progress visualization."""
