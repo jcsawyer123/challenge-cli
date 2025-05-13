@@ -16,10 +16,12 @@ class LanguagePlugin(ABC):
         solution_filename (str): The expected filename for the user's solution (e.g., "solution.py").
     """
 
-    name = "base"
-    docker_image = None
-    dockerfile_path = None
-    solution_filename = None
+    name: str = "base"
+    aliases: List[str] = []  # New: language aliases
+    docker_image: str = None
+    dockerfile_path: str = None
+    solution_filename: str = None
+
     
     # Common markers used across all languages
     PROFILE_MARKER = "LEETCODE_PROFILE:"

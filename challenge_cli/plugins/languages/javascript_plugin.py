@@ -1,13 +1,11 @@
 import os
 import json
-from .language_plugin import LanguagePlugin
-from .docker_utils import (
+from ..language_plugin import LanguagePlugin
+from ..docker_utils import (
     ensure_docker_image,
     start_hot_container,
     execute_in_container,  # Use new name
 )
-from challenge_cli.config import DOCKER_IMAGES, SOLUTION_TEMPLATES
-
 
 class JavaScriptPlugin(LanguagePlugin):
     """
@@ -17,18 +15,35 @@ class JavaScriptPlugin(LanguagePlugin):
     """
     
     name = "javascript"
-    docker_image = DOCKER_IMAGES.get('javascript', 'leetcode-javascript-runner:18')
+    aliases = ["js", "node"]
+    docker_image = 'javascript-runner:18'
     dockerfile_path = os.path.join(os.path.dirname(__file__), "dockerfiles", "Dockerfile.javascript")
     solution_filename = "solution.js"
-    
-    @staticmethod
-    def solution_template(function_name="solve"):
-        """Returns a template for a new JavaScript solution file."""
-        return SOLUTION_TEMPLATES['javascript'].format(function_name=function_name)
     
     def ensure_image(self):
         """Ensure the Docker image is available (builds if needed)."""
         ensure_docker_image(self.docker_image, self.dockerfile_path, context_dir=os.path.dirname(self.dockerfile_path))
+    
+    @staticmethod
+    def solution_template(function_name="solve"):
+        """Returns a template for a new JavaScript solution file."""
+        return f'''/**
+* @class Solution
+*/
+class Solution {{
+    /**
+    * @param {{*}} param1
+    * @param {{*}} param2
+    * @return {{*}}
+    */
+    {function_name}(param1, param2) {{
+        // Your solution here
+        return [];
+    }}
+}}
+
+module.exports = {{ Solution }};
+'''
     
     def generate_wrapper_template(self, function_name: str) -> str:
         """Generate JavaScript wrapper for single test execution."""

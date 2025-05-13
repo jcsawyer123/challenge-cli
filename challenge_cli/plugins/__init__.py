@@ -1,18 +1,38 @@
-from challenge_cli.plugins.go_plugin import GoPlugin
-from challenge_cli.plugins.javascript_plugin import JavaScriptPlugin
+from typing import Dict, Type
+
 from .language_plugin import LanguagePlugin
-from .python_plugin import PythonPlugin
+from .registry import resolve_language, get_solution_template
 
-PLUGINS = {}
+from .languages.javascript_plugin import JavaScriptPlugin
+from .languages.python_plugin import PythonPlugin
+from .languages.go_plugin import GoPlugin
 
-def register_plugin(plugin_cls):
-    PLUGINS[plugin_cls.name] = plugin_cls()
+# Import constants to populate
+from challenge_cli.core import constants
 
-def get_plugin(name):
+
+
+PLUGINS: Dict[str, LanguagePlugin] = {}
+
+def register_plugin(plugin_cls: Type[LanguagePlugin]):
+    """Register a plugin and update global constants."""
+    plugin = plugin_cls()
+    PLUGINS[plugin.name] = plugin
+    
+    # Update global constants
+    constants.SUPPORTED_LANGUAGES.add(plugin.name)
+    constants.DOCKER_IMAGES[plugin.name] = plugin.docker_image
+    
+    # Register aliases
+    for alias in getattr(plugin, 'aliases', []):
+        constants.LANGUAGE_ALIASES[alias] = plugin.name
+    
+    # Register template
+    if hasattr(plugin, 'solution_template'):
+        constants.SOLUTION_TEMPLATES[plugin.name] = plugin.solution_template
+
+def get_plugin(name: str) -> LanguagePlugin:
     return PLUGINS.get(name)
-
-def all_plugins():
-    return list(PLUGINS.values())
 
 # Register all available plugins
 register_plugin(PythonPlugin)

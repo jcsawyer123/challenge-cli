@@ -1,13 +1,11 @@
 import os
 import json
-from .language_plugin import LanguagePlugin
-from .docker_utils import (
+from ..language_plugin import LanguagePlugin
+from ..docker_utils import (
     ensure_docker_image,
     start_hot_container,
     execute_in_container,  # Use new name
 )
-from challenge_cli.config import DOCKER_IMAGES, SOLUTION_TEMPLATES
-
 
 class GoPlugin(LanguagePlugin):
     """
@@ -17,54 +15,54 @@ class GoPlugin(LanguagePlugin):
     Note: Go requires compilation before execution.
     """
     
+class GoPlugin(LanguagePlugin):
     name = "go"
-    docker_image = DOCKER_IMAGES.get('go', 'leetcode-go-runner:1.22')
+    aliases = ["golang"]
+    docker_image = 'go-runner:1.22'
     dockerfile_path = os.path.join(os.path.dirname(__file__), "dockerfiles", "Dockerfile.go")
     solution_filename = "solution.go"
-    
-    @staticmethod
-    def solution_template(function_name="solve"):
-        """Returns a template for a new Go solution file."""
-        template = SOLUTION_TEMPLATES.get('go', '''package main
-
-// {function_name} receives LeetCode-style JSON input as interface{{}}.
-// Use the conversion code below to get concrete types.
-func {function_name}(param1 interface{{}}, param2 interface{{}}) interface{{}} {{
-    // Example: Convert param1 to []int, param2 to int
-    numsIface, ok1 := param1.([]interface{{}})
-    targetFloat, ok2 := param2.(float64)
-    if !ok1 || !ok2 {{
-        return []int{{}}
-    }}
-    nums := make([]int, len(numsIface))
-    for i, v := range numsIface {{
-        nums[i] = int(v.(float64))
-    }}
-    target := int(targetFloat)
-
-    // Your solution here
-    // Example: two sum
-    seen := make(map[int]int)
-    for i, num := range nums {{
-        complement := target - num
-        if idx, found := seen[complement]; found {{
-            return []int{{idx, i}}
-        }}
-        seen[num] = i
-    }}
-    return []int{{}}
-}}
-''')
-        return template.format(function_name=function_name)
-    
+        
     def ensure_image(self):
         """Ensure the Docker image is available (builds if needed)."""
         ensure_docker_image(self.docker_image, self.dockerfile_path, context_dir=os.path.dirname(self.dockerfile_path))
     
+    @staticmethod
+    def solution_template(function_name="solve"):
+        """Returns a template for a new Go solution file."""
+        return f'''package main
+
+    // {function_name} receives LeetCode-style JSON input as interface{{}}.
+    // Use the conversion code below to get concrete types.
+    func {function_name}(param1 interface{{}}, param2 interface{{}}) interface{{}} {{
+        // Example: Convert param1 to []int, param2 to int
+        numsIface, ok1 := param1.([]interface{{}})
+        targetFloat, ok2 := param2.(float64)
+        if !ok1 || !ok2 {{
+            return []int{{}}
+        }}
+        nums := make([]int, len(numsIface))
+        for i, v := range numsIface {{
+            nums[i] = int(v.(float64))
+        }}
+        target := int(targetFloat)
+
+        // Your solution here
+        // Example: two sum
+        seen := make(map[int]int)
+        for i, num := range nums {{
+            complement := target - num
+            if idx, found := seen[complement]; found {{
+                return []int{{idx, i}}
+            }}
+            seen[num] = i
+        }}
+        return []int{{}}
+    }}
+'''
+
     def generate_wrapper_template(self, function_name: str) -> str:
         """Generate Go wrapper for single test execution."""
-        return f"""
-package main
+        return f"""package main
 
 import (
     "encoding/json"

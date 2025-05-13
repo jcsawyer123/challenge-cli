@@ -3,10 +3,11 @@ import json
 from typing import List, Optional, Tuple
 
 # Moved imports to top
+from challenge_cli.core.config import load_config_file
+from challenge_cli.plugins.registry import resolve_language
 from challenge_cli.tester import ChallengeTester
 from challenge_cli.plugins.docker_utils import shutdown_all_containers
 # Import consolidated utils and history constant
-from challenge_cli.utils import load_config, resolve_language_shorthand
 from challenge_cli.history_manager import HISTORY_DIR_NAME
 
 import typer
@@ -19,7 +20,6 @@ app = typer.Typer(
 )
 console = Console()
 
-# Removed load_config and resolve_language_shorthand - using versions from utils.py
 
 # --- Helper Function for Option Resolution ---
 def _resolve_options(
@@ -31,14 +31,13 @@ def _resolve_options(
     no_history_override: bool,
 ) -> Tuple[str, str, bool, int, Optional[str], bool]:
     """Resolves options based on command args, config files, and defaults."""
-    # Use imported load_config
-    config_data = load_config(config_override)
+    config_data = load_config_file(config_override)
     resolved_problems_dir = config_data.get("problems_dir", os.getcwd())
     resolved_platform = platform_override or config_data.get("default_platform", "leetcode")
 
     # Resolve language: command override > platform config in config file
-    # Use imported resolve_language_shorthand
-    resolved_lang_shorthand = resolve_language_shorthand(language_override)
+    # Use imported resolve_language
+    resolved_lang_shorthand = resolve_language(language_override)
     platform_config = config_data.get("platforms", {}).get(resolved_platform, {})
     resolved_language = resolved_lang_shorthand or platform_config.get("language")
 
@@ -93,7 +92,7 @@ def get_challenges(platform: str, problems_dir: str) -> List[str]:
 def challenge_path_completer(incomplete: str) -> List[str]:
     # Load config directly using imported function
     # This avoids reliance on global state or complex context passing
-    config = load_config()
+    config = load_config_file()
     # Use getcwd() as fallback if not in config, mirroring old options default
     problems_dir = config.get("problems_dir", os.getcwd())
     # Use 'leetcode' as fallback, mirroring old options default
@@ -109,7 +108,7 @@ def snapshot_id_completer(ctx: typer.Context, incomplete: str) -> List[str]:
     if not challenge_path:
         return []
     # Load config directly using imported function
-    config = load_config()
+    config = load_config_file()
     problems_dir = config.get("problems_dir", os.getcwd())
     # Determine platform: Use context if available, else config, else default
     platform = ctx.params.get("platform") or config.get("default_platform", "leetcode")
@@ -146,8 +145,8 @@ def init(
     )
 
     # 'init' requires an explicit language via the command line option
-    # Use imported resolve_language_shorthand
-    resolved_language = resolve_language_shorthand(language)
+    # Use imported resolve_language
+    resolved_language = resolve_language(language)
     if not resolved_language:
          console.print("[bold red]Error:[/bold red] The '--language' option is required for 'init'.")
          raise typer.Exit(code=1)

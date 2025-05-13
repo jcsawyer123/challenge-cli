@@ -1,13 +1,11 @@
 import os
 import json
-from .language_plugin import LanguagePlugin
-from .docker_utils import (
+from ..language_plugin import LanguagePlugin
+from ..docker_utils import (
     ensure_docker_image,
     start_hot_container,
     execute_in_container,  # Use new name
 )
-from challenge_cli.config import DOCKER_IMAGES, SOLUTION_TEMPLATES
-
 
 class PythonPlugin(LanguagePlugin):
     """
@@ -17,19 +15,28 @@ class PythonPlugin(LanguagePlugin):
     """
     
     name = "python"
-    docker_image = DOCKER_IMAGES.get('python', 'leetcode-python-runner:3.12')
+    aliases = ["py"]
+    docker_image = 'python-runner:3.12'
     dockerfile_path = os.path.join(os.path.dirname(__file__), "dockerfiles", "Dockerfile.python")
     solution_filename = "solution.py"
     
-    @staticmethod
-    def solution_template(function_name="solve"):
-        """Returns a template for a new Python solution file."""
-        return SOLUTION_TEMPLATES['python'].format(function_name=function_name)
-    
+
     def ensure_image(self):
         """Ensure the Docker image is available (builds if needed)."""
         ensure_docker_image(self.docker_image, self.dockerfile_path, context_dir=os.path.dirname(self.dockerfile_path))
     
+    @staticmethod
+    def solution_template(function_name="solve"):
+        print(function_name)
+        """Returns a template for a new Python solution file."""
+        return f'''class Solution:
+    def {function_name}(self, param1, param2):
+        """
+        Replace this with the actual function signature.
+        """
+        pass
+    '''
+
     def generate_wrapper_template(self, function_name: str) -> str:
         """Generate Python wrapper for single test execution."""
         return f"""
