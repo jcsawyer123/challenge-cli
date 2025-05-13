@@ -1,9 +1,10 @@
+from dataclasses import dataclass
 import os
 import json
 from typing import List, Optional, Tuple
 
 # Moved imports to top
-from challenge_cli.core.config import load_config_file
+from challenge_cli.core.config import ChallengeConfig, load_config_file
 from challenge_cli.plugins.registry import resolve_language
 from challenge_cli.tester import ChallengeTester
 from challenge_cli.plugins.docker_utils import shutdown_all_containers
@@ -22,48 +23,68 @@ console = Console()
 
 
 # --- Helper Function for Option Resolution ---
+@dataclass
+class ResolvedOptions:
+    """Container for resolved CLI options."""
+    platform: str
+    problems_dir: str
+    use_history: bool
+    max_snapshots: int
+    language: Optional[str]
+    debug: bool
+    config: ChallengeConfig  # Include the full config object
+
+
 def _resolve_options(
     language_override: Optional[str],
-    platform_override: Optional[str],
+    platform_override: Optional[str], 
     config_override: Optional[str],
     debug_override: bool,
     history_override: Optional[bool],
     no_history_override: bool,
-) -> Tuple[str, str, bool, int, Optional[str], bool]:
+) -> ResolvedOptions:
     """Resolves options based on command args, config files, and defaults."""
+    # Load configuration
     config_data = load_config_file(config_override)
-    resolved_problems_dir = config_data.get("problems_dir", os.getcwd())
-    resolved_platform = platform_override or config_data.get("default_platform", "leetcode")
-
-    # Resolve language: command override > platform config in config file
-    # Use imported resolve_language
-    resolved_lang_shorthand = resolve_language(language_override)
-    platform_config = config_data.get("platforms", {}).get(resolved_platform, {})
-    resolved_language = resolved_lang_shorthand or platform_config.get("language")
-
+    config = ChallengeConfig.from_dict(config_data)
+    
+    # Apply overrides
+    if platform_override:
+        config.platform = platform_override
+    
+    if debug_override:
+        config.debug = True
+    
+    # Resolve language
+    language = None
+    if language_override:
+        language = resolve_language(language_override)
+    elif config.language:
+        language = config.language
+    else:
+        # Try platform-specific config
+        platform_config = config.get_platform_config()
+        if platform_config.language:
+            language = platform_config.language
+    
     # Resolve history settings
-    resolved_use_history = True
-    # Check config file first
-    if isinstance(config_data.get("history"), bool):
-        resolved_use_history = config_data["history"]
+    use_history = config.history.enabled
+    
     # Command-line flags override config
     if history_override is not None:
-        resolved_use_history = history_override
+        use_history = history_override
     if no_history_override:
-        resolved_use_history = False # --no-history takes precedence
-
-    resolved_max_snapshots = config_data.get("history", {}).get("max_snapshots", 50)
-    resolved_debug = debug_override
-
-    return (
-        resolved_platform,
-        resolved_problems_dir,
-        resolved_use_history,
-        resolved_max_snapshots,
-        resolved_language,
-        resolved_debug, # Pass debug status back
+        use_history = False  # --no-history takes precedence
+    
+    return ResolvedOptions(
+        platform=config.platform,
+        problems_dir=str(config.problems_dir),
+        use_history=use_history,
+        max_snapshots=config.history.max_snapshots,
+        language=language,
+        debug=config.debug,
+        config=config  # Pass the full config for future use
     )
-
 
 # --- Autocompletion ---
 # Note: Autocompletion functions now load config directly as needed
@@ -134,43 +155,41 @@ def init(
     no_history: bool = typer.Option(False, "--no-history", help="Disable history"),
 ):
     """Initialize a new challenge."""
-    resolved_platform, resolved_problems_dir, resolved_use_history, \
-    resolved_max_snapshots, _, resolved_debug = _resolve_options(
-        language_override=language, # Pass language for potential config use
+    options = _resolve_options(
+        language_override=language,
         platform_override=platform,
         config_override=config,
         debug_override=debug,
         history_override=history,
         no_history_override=no_history,
     )
-
-    # 'init' requires an explicit language via the command line option
-    # Use imported resolve_language
-    resolved_language = resolve_language(language)
-    if not resolved_language:
-         console.print("[bold red]Error:[/bold red] The '--language' option is required for 'init'.")
-         raise typer.Exit(code=1)
-
-    if resolved_debug:
-        console.print(f"Debug: Initializing challenge '{challenge_path}' for platform '{resolved_platform}' in '{resolved_problems_dir}' with language '{resolved_language}'")
-
+    
+    # Language is required for init
+    if not options.language:
+        console.print("[bold red]Error:[/bold red] The '--language' option is required for 'init'.")
+        raise typer.Exit(code=1)
+    
+    if options.debug:
+        console.print(f"Debug: Initializing challenge '{challenge_path}' for platform '{options.platform}' in '{options.problems_dir}' with language '{options.language}'")
+    
     try:
         tester = ChallengeTester(
-            platform=resolved_platform,
+            platform=options.platform,
             challenge_path=challenge_path,
-            language=resolved_language, # Use the validated language
-            problems_dir=resolved_problems_dir,
-            use_history=resolved_use_history,
-            max_snapshots=resolved_max_snapshots
+            language=options.language,
+            problems_dir=options.problems_dir,
+            use_history=options.use_history,
+            max_snapshots=options.max_snapshots
         )
-        tester.init_problem(language=resolved_language, function_name=function)
-        console.print(f"[green]Successfully initialized challenge '{challenge_path}' for {resolved_language}.[/green]")
+        tester.init_problem(language=options.language, function_name=function)
+        console.print(f"[green]Successfully initialized challenge '{challenge_path}' for {options.language}.[/green]")
     except Exception as e:
         console.print(f"[bold red]Error initializing challenge:[/bold red] {e}")
-        if resolved_debug:
+        if options.debug:
             import traceback
             console.print(traceback.format_exc())
         raise typer.Exit(code=1)
+
 
 @app.command()
 def test(
@@ -187,8 +206,7 @@ def test(
     no_history: bool = typer.Option(False, "--no-history", help="Disable history"),
 ):
     """Test a solution."""
-    resolved_platform, resolved_problems_dir, resolved_use_history, \
-    resolved_max_snapshots, resolved_language, resolved_debug = _resolve_options(
+    options = _resolve_options(
         language_override=language,
         platform_override=platform,
         config_override=config,
@@ -196,30 +214,21 @@ def test(
         history_override=history,
         no_history_override=no_history,
     )
-
-    if not resolved_language:
-        # If language still not resolved, try reading from challenge config?
-        # For now, let ChallengeTester handle it or error if needed.
-        # Or exit early? Let's allow ChallengeTester to try.
-        pass
-        # console.print("[bold red]Error:[/bold red] Could not determine language. Use -l or configure.")
-        # raise typer.Exit(code=1)
-
-    if resolved_debug:
-         console.print(f"Debug: Testing challenge '{challenge_path}' for platform '{resolved_platform}' in '{resolved_problems_dir}' with language '{resolved_language or 'auto'}'")
-
+    
+    if options.debug:
+        console.print(f"Debug: Testing challenge '{challenge_path}' for platform '{options.platform}' in '{options.problems_dir}' with language '{options.language or 'auto'}'")
+    
     try:
         tester = ChallengeTester(
-            platform=resolved_platform,
+            platform=options.platform,
             challenge_path=challenge_path,
-            language=resolved_language, # Pass resolved language (could be None)
-            problems_dir=resolved_problems_dir,
-            use_history=resolved_use_history,
-            max_snapshots=resolved_max_snapshots
+            language=options.language,
+            problems_dir=options.problems_dir,
+            use_history=options.use_history,
+            max_snapshots=options.max_snapshots
         )
-        # Tester's run_tests method should handle None language if possible (e.g., by detecting)
         tester.run_tests(
-            language=resolved_language, # Pass it along
+            language=options.language,
             detailed=detailed,
             cases_arg=cases,
             snapshot_comment=comment,
@@ -227,10 +236,11 @@ def test(
         )
     except Exception as e:
         console.print(f"[bold red]Error running tests:[/bold red] {e}")
-        if resolved_debug:
+        if options.debug:
             import traceback
             console.print(traceback.format_exc())
         raise typer.Exit(code=1)
+
 
 @app.command()
 def profile(
@@ -248,8 +258,7 @@ def profile(
     no_history: bool = typer.Option(False, "--no-history", help="Disable history"),
 ):
     """Profile a solution."""
-    resolved_platform, resolved_problems_dir, resolved_use_history, \
-    resolved_max_snapshots, resolved_language, resolved_debug = _resolve_options(
+    options = _resolve_options(
         language_override=language,
         platform_override=platform,
         config_override=config,
@@ -257,21 +266,21 @@ def profile(
         history_override=history,
         no_history_override=no_history,
     )
-
-    if resolved_debug:
-         console.print(f"Debug: Profiling challenge '{challenge_path}' for platform '{resolved_platform}' in '{resolved_problems_dir}' with language '{resolved_language or 'auto'}'")
-
+    
+    if options.debug:
+        console.print(f"Debug: Profiling challenge '{challenge_path}' for platform '{options.platform}' in '{options.problems_dir}' with language '{options.language or 'auto'}'")
+    
     try:
         tester = ChallengeTester(
-            platform=resolved_platform,
+            platform=options.platform,
             challenge_path=challenge_path,
-            language=resolved_language,
-            problems_dir=resolved_problems_dir,
-            use_history=resolved_use_history,
-            max_snapshots=resolved_max_snapshots
+            language=options.language,
+            problems_dir=options.problems_dir,
+            use_history=options.use_history,
+            max_snapshots=options.max_snapshots
         )
         tester.profile(
-            language=resolved_language,
+            language=options.language,
             iterations=iterations,
             detailed=detailed,
             cases_arg=cases,
@@ -280,10 +289,11 @@ def profile(
         )
     except Exception as e:
         console.print(f"[bold red]Error profiling solution:[/bold red] {e}")
-        if resolved_debug:
+        if options.debug:
             import traceback
             console.print(traceback.format_exc())
         raise typer.Exit(code=1)
+
 
 @app.command()
 def analyze(
@@ -296,41 +306,41 @@ def analyze(
     no_history: bool = typer.Option(False, "--no-history", help="Disable history"),
 ):
     """Analyze solution complexity (Python only)."""
-    resolved_platform, resolved_problems_dir, resolved_use_history, \
-    resolved_max_snapshots, resolved_language, resolved_debug = _resolve_options(
-        language_override=language, # Pass explicitly provided language
+    options = _resolve_options(
+        language_override=language,
         platform_override=platform,
         config_override=config,
         debug_override=debug,
         history_override=history,
         no_history_override=no_history,
     )
-
-    # Analysis currently only supports Python. Default or validate.
-    final_language = resolved_language or "python" # Default to python if not specified
+    
+    # Validate language for analysis
+    final_language = options.language or "python"
     if final_language != "python":
         console.print("[bold red]Error:[/bold red] Analysis currently only supports Python ('-l python').")
         raise typer.Exit(code=1)
-
-    if resolved_debug:
-         console.print(f"Debug: Analyzing challenge '{challenge_path}' for platform '{resolved_platform}' in '{resolved_problems_dir}' with language '{final_language}'")
-
+    
+    if options.debug:
+        console.print(f"Debug: Analyzing challenge '{challenge_path}' for platform '{options.platform}' in '{options.problems_dir}' with language '{final_language}'")
+    
     try:
         tester = ChallengeTester(
-            platform=resolved_platform,
+            platform=options.platform,
             challenge_path=challenge_path,
-            language=final_language, # Use validated 'python'
-            problems_dir=resolved_problems_dir,
-            use_history=resolved_use_history,
-            max_snapshots=resolved_max_snapshots
+            language=final_language,
+            problems_dir=options.problems_dir,
+            use_history=options.use_history,
+            max_snapshots=options.max_snapshots
         )
         tester.analyze_complexity(language=final_language)
     except Exception as e:
         console.print(f"[bold red]Error analyzing complexity:[/bold red] {e}")
-        if resolved_debug:
+        if options.debug:
             import traceback
             console.print(traceback.format_exc())
         raise typer.Exit(code=1)
+
 
 @app.command()
 def clean(
@@ -339,33 +349,33 @@ def clean(
     debug: bool = typer.Option(False, "--debug", help="Debug mode"),
 ):
     """Shutdown all running challenge containers immediately."""
-    # Resolve options mainly to get platform and debug status if needed
-    resolved_platform, _, _, _, _, resolved_debug = _resolve_options(
-        language_override=None, # Not needed for clean
+    options = _resolve_options(
+        language_override=None,
         platform_override=platform,
         config_override=config,
         debug_override=debug,
-        history_override=None, # Not needed
-        no_history_override=False, # Not needed
+        history_override=None,
+        no_history_override=False,
     )
-
-    if resolved_debug:
-        console.print(f"Debug: Shutting down containers for platform '{resolved_platform}'")
-
+    
+    if options.debug:
+        console.print(f"Debug: Shutting down containers for platform '{options.platform}'")
+    
     try:
         shutdown_all_containers()
-        # Use resolved_platform in the message
-        console.print(f"[green]Shutdown all running challenge containers for platform '{resolved_platform}'.[/green]")
+        console.print(f"[green]Shutdown all running challenge containers for platform '{options.platform}'.[/green]")
     except Exception as e:
         console.print(f"[bold red]Error shutting down containers:[/bold red] {e}")
-        if resolved_debug:
+        if options.debug:
             import traceback
             console.print(traceback.format_exc())
         raise typer.Exit(code=1)
 
+
 # --- History Subcommands ---
 history_app = typer.Typer(help="Manage solution history")
 app.add_typer(history_app, name="history")
+
 
 @history_app.command("list")
 def history_list(
@@ -379,8 +389,7 @@ def history_list(
     no_history: bool = typer.Option(False, "--no-history", help="Disable history"),
 ):
     """List solution snapshots."""
-    resolved_platform, resolved_problems_dir, resolved_use_history, \
-    resolved_max_snapshots, resolved_language, resolved_debug = _resolve_options(
+    options = _resolve_options(
         language_override=language,
         platform_override=platform,
         config_override=config,
@@ -388,31 +397,31 @@ def history_list(
         history_override=history,
         no_history_override=no_history,
     )
-
-    if not resolved_use_history:
+    
+    if not options.use_history:
         console.print("[yellow]History is disabled. Cannot list snapshots.[/yellow]")
         raise typer.Exit()
-
-    if resolved_debug:
-         console.print(f"Debug: Listing history for challenge '{challenge_path}' for platform '{resolved_platform}' in '{resolved_problems_dir}' with language '{resolved_language or 'auto'}'")
-
+    
+    if options.debug:
+        console.print(f"Debug: Listing history for challenge '{challenge_path}' for platform '{options.platform}' in '{options.problems_dir}' with language '{options.language or 'auto'}'")
+    
     try:
         tester = ChallengeTester(
-            platform=resolved_platform,
+            platform=options.platform,
             challenge_path=challenge_path,
-            language=resolved_language,
-            problems_dir=resolved_problems_dir,
-            use_history=resolved_use_history, # Pass resolved value
-            max_snapshots=resolved_max_snapshots
+            language=options.language,
+            problems_dir=options.problems_dir,
+            use_history=options.use_history,
+            max_snapshots=options.max_snapshots
         )
-        # Let tester handle language resolution if None
-        tester.list_history(language=resolved_language, limit=limit)
+        tester.list_history(language=options.language, limit=limit)
     except Exception as e:
         console.print(f"[bold red]Error listing history:[/bold red] {e}")
-        if resolved_debug:
+        if options.debug:
             import traceback
             console.print(traceback.format_exc())
         raise typer.Exit(code=1)
+
 
 @history_app.command("show")
 def history_show(
@@ -425,40 +434,39 @@ def history_show(
     no_history: bool = typer.Option(False, "--no-history", help="Disable history"),
 ):
     """Show details of a specific snapshot."""
-    resolved_platform, resolved_problems_dir, resolved_use_history, \
-    resolved_max_snapshots, resolved_language, resolved_debug = _resolve_options(
-        language_override=None, # Language not directly used by show, tester infers?
+    options = _resolve_options(
+        language_override=None,
         platform_override=platform,
         config_override=config,
         debug_override=debug,
         history_override=history,
         no_history_override=no_history,
     )
-
-    if not resolved_use_history:
+    
+    if not options.use_history:
         console.print("[yellow]History is disabled. Cannot show snapshot.[/yellow]")
         raise typer.Exit()
-
-    if resolved_debug:
-         console.print(f"Debug: Showing snapshot '{snapshot_id}' for challenge '{challenge_path}' on platform '{resolved_platform}'")
-
+    
+    if options.debug:
+        console.print(f"Debug: Showing snapshot '{snapshot_id}' for challenge '{challenge_path}' on platform '{options.platform}'")
+    
     try:
-        # Tester needs language, even if just for context? Pass resolved default.
         tester = ChallengeTester(
-            platform=resolved_platform,
+            platform=options.platform,
             challenge_path=challenge_path,
-            language=resolved_language, # Pass resolved language
-            problems_dir=resolved_problems_dir,
-            use_history=resolved_use_history,
-            max_snapshots=resolved_max_snapshots
+            language=options.language,
+            problems_dir=options.problems_dir,
+            use_history=options.use_history,
+            max_snapshots=options.max_snapshots
         )
         tester.show_snapshot(snapshot_id)
     except Exception as e:
         console.print(f"[bold red]Error showing snapshot:[/bold red] {e}")
-        if resolved_debug:
+        if options.debug:
             import traceback
             console.print(traceback.format_exc())
         raise typer.Exit(code=1)
+
 
 @history_app.command("compare")
 def history_compare(
@@ -472,39 +480,39 @@ def history_compare(
     no_history: bool = typer.Option(False, "--no-history", help="Disable history"),
 ):
     """Compare two snapshots."""
-    resolved_platform, resolved_problems_dir, resolved_use_history, \
-    resolved_max_snapshots, resolved_language, resolved_debug = _resolve_options(
-        language_override=None, # Language not directly used by compare?
+    options = _resolve_options(
+        language_override=None,
         platform_override=platform,
         config_override=config,
         debug_override=debug,
         history_override=history,
         no_history_override=no_history,
     )
-
-    if not resolved_use_history:
+    
+    if not options.use_history:
         console.print("[yellow]History is disabled. Cannot compare snapshots.[/yellow]")
         raise typer.Exit()
-
-    if resolved_debug:
-         console.print(f"Debug: Comparing snapshots '{snapshot1}' and '{snapshot2}' for challenge '{challenge_path}' on platform '{resolved_platform}'")
-
+    
+    if options.debug:
+        console.print(f"Debug: Comparing snapshots '{snapshot1}' and '{snapshot2}' for challenge '{challenge_path}' on platform '{options.platform}'")
+    
     try:
         tester = ChallengeTester(
-            platform=resolved_platform,
+            platform=options.platform,
             challenge_path=challenge_path,
-            language=resolved_language, # Pass resolved language
-            problems_dir=resolved_problems_dir,
-            use_history=resolved_use_history,
-            max_snapshots=resolved_max_snapshots
+            language=options.language,
+            problems_dir=options.problems_dir,
+            use_history=options.use_history,
+            max_snapshots=options.max_snapshots
         )
         tester.compare_snapshots(snapshot1, snapshot2)
     except Exception as e:
         console.print(f"[bold red]Error comparing snapshots:[/bold red] {e}")
-        if resolved_debug:
+        if options.debug:
             import traceback
             console.print(traceback.format_exc())
         raise typer.Exit(code=1)
+
 
 @history_app.command("restore")
 def history_restore(
@@ -518,39 +526,39 @@ def history_restore(
     no_history: bool = typer.Option(False, "--no-history", help="Disable history"),
 ):
     """Restore a snapshot."""
-    resolved_platform, resolved_problems_dir, resolved_use_history, \
-    resolved_max_snapshots, resolved_language, resolved_debug = _resolve_options(
-        language_override=None, # Language not directly used by restore?
+    options = _resolve_options(
+        language_override=None,
         platform_override=platform,
         config_override=config,
         debug_override=debug,
         history_override=history,
         no_history_override=no_history,
     )
-
-    if not resolved_use_history:
+    
+    if not options.use_history:
         console.print("[yellow]History is disabled. Cannot restore snapshot.[/yellow]")
         raise typer.Exit()
-
-    if resolved_debug:
-         console.print(f"Debug: Restoring snapshot '{snapshot_id}' for challenge '{challenge_path}' on platform '{resolved_platform}'")
-
+    
+    if options.debug:
+        console.print(f"Debug: Restoring snapshot '{snapshot_id}' for challenge '{challenge_path}' on platform '{options.platform}'")
+    
     try:
         tester = ChallengeTester(
-            platform=resolved_platform,
+            platform=options.platform,
             challenge_path=challenge_path,
-            language=resolved_language, # Pass resolved language
-            problems_dir=resolved_problems_dir,
-            use_history=resolved_use_history,
-            max_snapshots=resolved_max_snapshots
+            language=options.language,
+            problems_dir=options.problems_dir,
+            use_history=options.use_history,
+            max_snapshots=options.max_snapshots
         )
         tester.restore_snapshot(snapshot_id, backup=backup)
     except Exception as e:
         console.print(f"[bold red]Error restoring snapshot:[/bold red] {e}")
-        if resolved_debug:
+        if options.debug:
             import traceback
             console.print(traceback.format_exc())
         raise typer.Exit(code=1)
+
 
 @history_app.command("visualize")
 def history_visualize(
@@ -565,8 +573,7 @@ def history_visualize(
     no_history: bool = typer.Option(False, "--no-history", help="Disable history"),
 ):
     """Visualize solution history."""
-    resolved_platform, resolved_problems_dir, resolved_use_history, \
-    resolved_max_snapshots, resolved_language, resolved_debug = _resolve_options(
+    options = _resolve_options(
         language_override=language,
         platform_override=platform,
         config_override=config,
@@ -574,30 +581,31 @@ def history_visualize(
         history_override=history,
         no_history_override=no_history,
     )
-
-    if not resolved_use_history:
+    
+    if not options.use_history:
         console.print("[yellow]History is disabled. Cannot visualize history.[/yellow]")
         raise typer.Exit()
-
-    if resolved_debug:
-         console.print(f"Debug: Visualizing history for challenge '{challenge_path}' for platform '{resolved_platform}' in '{resolved_problems_dir}' with language '{resolved_language or 'auto'}'")
-
+    
+    if options.debug:
+        console.print(f"Debug: Visualizing history for challenge '{challenge_path}' for platform '{options.platform}' in '{options.problems_dir}' with language '{options.language or 'auto'}'")
+    
     try:
         tester = ChallengeTester(
-            platform=resolved_platform,
+            platform=options.platform,
             challenge_path=challenge_path,
-            language=resolved_language,
-            problems_dir=resolved_problems_dir,
-            use_history=resolved_use_history,
-            max_snapshots=resolved_max_snapshots
+            language=options.language,
+            problems_dir=options.problems_dir,
+            use_history=options.use_history,
+            max_snapshots=options.max_snapshots
         )
-        tester.visualize_history(language=resolved_language, output_path=output_path, cases_arg=cases)
+        tester.visualize_history(language=options.language, output_path=output_path, cases_arg=cases)
     except Exception as e:
         console.print(f"[bold red]Error visualizing history:[/bold red] {e}")
-        if resolved_debug:
+        if options.debug:
             import traceback
             console.print(traceback.format_exc())
         raise typer.Exit(code=1)
-
+    
+# --- Main Entry Point ---
 if __name__ == "__main__":
     app()
