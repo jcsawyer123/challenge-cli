@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from challenge_cli.core.config import HISTORY_DIR_NAME
 from challenge_cli.core.data_utils import load_json, save_json
-from challenge_cli.history.peformance import PerformanceTracker
+from challenge_cli.history.performance import PerformanceTracker
 
 from .snapshots import SnapshotManager
 from .test_results import TestResultsTracker

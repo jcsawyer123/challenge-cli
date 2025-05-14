@@ -2,6 +2,8 @@ import os
 from abc import ABC, abstractmethod
 from typing import List, Tuple
 
+from challenge_cli.core.config import get_config
+
 
 class LanguagePlugin(ABC):
     """
@@ -17,7 +19,7 @@ class LanguagePlugin(ABC):
     """
 
     name: str = "base"
-    aliases: List[str] = []  # New: language aliases
+    aliases: List[str] = []  # Language aliases
     docker_image: str = None
     dockerfile_path: str = None
     solution_filename: str = None
@@ -108,29 +110,56 @@ class LanguagePlugin(ABC):
 
     def _container_name(self, workdir):
         """
-        Generate a unique container name for the hot container,
-        based on platform, language, image tag, and challenge path.
+        Generate a container name based on language and configuration.
 
         Args:
             workdir (str): Path to the language-specific directory.
 
         Returns:
-            str: Unique container name.
+            str: Container name.
         """
-        # Extract platform and challenge path from directory structure
-        # workdir pattern: problems_dir/platform/challenge_path/language
+        config = get_config()
+
+        if config.docker.container_sharing == "per-language":
+            # Shared container for all challenges in this language
+            return f"challenge-cli-{self.name}"
+        else:
+            # Per-challenge container (legacy behavior)
+            language_dir = os.path.abspath(workdir)
+            challenge_dir = os.path.dirname(language_dir)
+            platform = os.path.basename(os.path.dirname(challenge_dir))
+            challenge_path = os.path.basename(challenge_dir)
+
+            # Make challenge path safe for use in container name
+            safe_challenge = challenge_path.replace("/", "-").replace("\\", "-")
+
+            return f"challenge-cli-{platform}-{safe_challenge}-{self.name}"
+
+    def _get_problems_dir(self, workdir: str) -> str:
+        """Get the problems directory root."""
+        # workdir is language-specific dir, go up to problems root
         language_dir = os.path.abspath(workdir)
         challenge_dir = os.path.dirname(language_dir)
-        platform = os.path.basename(os.path.dirname(challenge_dir))
-        challenge_path = os.path.basename(challenge_dir)
+        platform_dir = os.path.dirname(challenge_dir)
+        problems_dir = os.path.dirname(platform_dir)
+        return problems_dir
 
-        # Clean up image tag to make it a valid container name
-        image_tag = self.docker_image.replace(":", "-").replace("/", "-")
+    def _to_container_path(self, host_path: str, problems_dir: str) -> str:
+        """Convert host path to container path."""
+        abs_path = os.path.abspath(host_path)
+        abs_problems = os.path.abspath(problems_dir)
 
-        # Make challenge path safe for use in container name
-        safe_challenge = challenge_path.replace("/", "-").replace("\\", "-")
+        if abs_path.startswith(abs_problems):
+            rel_path = os.path.relpath(abs_path, abs_problems)
+            return f"/workspace/{rel_path}"
+        else:
+            # Path is outside problems directory
+            return abs_path
 
-        return f"challenge-{platform}-{safe_challenge}-{self.name}-{image_tag}"
+    def _get_container_workdir(self, workdir: str) -> str:
+        """Get the working directory path inside the container."""
+        problems_dir = self._get_problems_dir(workdir)
+        return self._to_container_path(workdir, problems_dir)
 
     # Common helper methods that can be used by subclasses
 
@@ -229,3 +258,12 @@ class LanguagePlugin(ABC):
         Must be implemented by subclasses.
         """
         raise NotImplementedError("Subclasses must implement _parse_single_case_output")
+
+    def get_cache_key(self, workdir: str) -> str:
+        """Get a cache key for this solution."""
+        # Default implementation - subclasses can override
+        solution_path = os.path.join(workdir, self.solution_filename)
+        if os.path.exists(solution_path):
+            stat = os.stat(solution_path)
+            return f"{self.name}_{stat.st_mtime}_{stat.st_size}"
+        return f"{self.name}_nocache"

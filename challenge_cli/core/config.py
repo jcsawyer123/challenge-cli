@@ -12,7 +12,7 @@ DEFAULT_PROBLEMS_DIR = Path.cwd()
 DEFAULT_PROFILE_ITERATIONS = 100
 DOCKER_BUILD_TIMEOUT = 300
 DOCKER_RUN_TIMEOUT = 10
-DOCKER_CONTAINER_SLEEP = 600
+DOCKER_CONTAINER_SLEEP = 3600  # Increased for better cache utilization
 HISTORY_ENABLED_DEFAULT = True
 HISTORY_MAX_SNAPSHOTS = 50
 HISTORY_DIR_NAME = ".history"
@@ -20,6 +20,18 @@ MAX_ERROR_DISPLAY_LENGTH = 1000
 
 # Global configuration instance
 _config: Optional["ChallengeConfig"] = None
+
+
+@dataclass
+class CacheConfig:
+    """Cache configuration."""
+
+    enabled: bool = True
+    directory: Optional[str] = None  # Default: .cache in problems_dir
+    max_size_mb: int = 500
+    ttl_days: int = 7
+    compile_cache: bool = True
+    dependency_cache: bool = True
 
 
 @dataclass
@@ -38,6 +50,7 @@ class DockerConfig:
     build_timeout: int = DOCKER_BUILD_TIMEOUT
     run_timeout: int = DOCKER_RUN_TIMEOUT
     container_sleep: int = DOCKER_CONTAINER_SLEEP
+    container_sharing: str = "per-language"  # Options: "per-language", "per-challenge"
 
 
 @dataclass
@@ -71,6 +84,7 @@ class ChallengeConfig:
     debug: bool = False
     history: HistoryConfig = field(default_factory=HistoryConfig)
     docker: DockerConfig = field(default_factory=DockerConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
     platforms: Dict[str, PlatformConfig] = field(default_factory=dict)
     profile_iterations: int = DEFAULT_PROFILE_ITERATIONS
     max_error_display_length: int = MAX_ERROR_DISPLAY_LENGTH
@@ -128,6 +142,9 @@ class ChallengeConfig:
         if "docker" in config_data and isinstance(config_data["docker"], dict):
             config_data["docker"] = DockerConfig(**config_data["docker"])
 
+        if "cache" in config_data and isinstance(config_data["cache"], dict):
+            config_data["cache"] = CacheConfig(**config_data["cache"])
+
         if "platforms" in config_data:
             platforms = {}
             for platform, settings in config_data["platforms"].items():
@@ -158,6 +175,12 @@ class ChallengeConfig:
         """Get configuration for a specific platform."""
         platform = platform or self.platform
         return self.platforms.get(platform, PlatformConfig())
+
+    def get_cache_dir(self) -> Path:
+        """Get the cache directory path."""
+        if self.cache.directory:
+            return Path(self.cache.directory).expanduser()
+        return self.problems_dir / ".cache"
 
 
 def load_config_file(config_path: Optional[Path] = None) -> Dict[str, Any]:

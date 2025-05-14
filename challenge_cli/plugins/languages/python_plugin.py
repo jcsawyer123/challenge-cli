@@ -1,9 +1,11 @@
 import json
 import os
 
+from challenge_cli.core.config import get_config
+
 from ..docker_utils import (
     ensure_docker_image,
-    execute_in_container,  # Use new name
+    execute_in_container,
     start_hot_container,
 )
 from ..language_plugin import LanguagePlugin
@@ -34,15 +36,14 @@ class PythonPlugin(LanguagePlugin):
 
     @staticmethod
     def solution_template(function_name="solve"):
-        print(function_name)
         """Returns a template for a new Python solution file."""
-        return f'''class Solution:
+        return f"""class Solution:
     def {function_name}(self, param1, param2):
-        """
+        \"\"\"
         Replace this with the actual function signature.
-        """
+        \"\"\"
         pass
-    '''
+    """
 
     def generate_wrapper_template(self, function_name: str) -> str:
         """Generate Python wrapper for single test execution."""
@@ -136,13 +137,34 @@ if __name__ == "__main__":
     ) -> tuple:
         """Run a single test case."""
         self.ensure_image()
-        wrapper_path = self._prepare_workspace(workdir, function_name)
+
+        # Get configuration
+        config = get_config()
+
+        # Prepare paths
         container_name = self._container_name(workdir)
-        start_hot_container(self.docker_image, workdir, container_name)
+        problems_dir = self._get_problems_dir(workdir)
+        cache_dir = str(config.get_cache_dir())
+
+        # Start container
+        start_hot_container(
+            self.docker_image,
+            workdir,
+            container_name,
+            problems_dir=problems_dir,
+            cache_dir=cache_dir,
+        )
+
+        # Prepare wrapper
+        wrapper_path = self._prepare_workspace(workdir, function_name)
+        container_workdir = self._get_container_workdir(workdir)
 
         command = ["python", "main.py"] + [json.dumps(arg) for arg in input_args]
         stdout, stderr, exit_code = execute_in_container(
-            container_name, command, input_data=input_data
+            container_name,
+            command,
+            working_dir=container_workdir,
+            input_data=input_data,
         )
 
         stdout_lines = stdout.rstrip().splitlines()
@@ -161,8 +183,23 @@ if __name__ == "__main__":
     ) -> list:
         """Run multiple test cases efficiently."""
         self.ensure_image()
+
+        # Get configuration
+        config = get_config()
+
+        # Prepare paths
         container_name = self._container_name(workdir)
-        start_hot_container(self.docker_image, workdir, container_name)
+        problems_dir = self._get_problems_dir(workdir)
+        cache_dir = str(config.get_cache_dir())
+
+        # Start container
+        start_hot_container(
+            self.docker_image,
+            workdir,
+            container_name,
+            problems_dir=problems_dir,
+            cache_dir=cache_dir,
+        )
 
         inputs_json_path = os.path.join(workdir, "inputs.json")
         driver_path = os.path.join(workdir, "test_driver.py")
@@ -178,9 +215,10 @@ if __name__ == "__main__":
                 f.write(driver_code)
 
             # Execute
+            container_workdir = self._get_container_workdir(workdir)
             command = ["python", "test_driver.py"]
             stdout, stderr, exit_code = execute_in_container(
-                container_name, command, input_data=None
+                container_name, command, working_dir=container_workdir, input_data=None
             )
 
             # Parse results using common helper

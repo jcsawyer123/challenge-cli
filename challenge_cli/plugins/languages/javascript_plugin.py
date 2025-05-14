@@ -1,9 +1,11 @@
 import json
 import os
 
+from challenge_cli.core.config import get_config
+
 from ..docker_utils import (
     ensure_docker_image,
-    execute_in_container,  # Use new name
+    execute_in_container,
     start_hot_container,
 )
 from ..language_plugin import LanguagePlugin
@@ -132,20 +134,64 @@ try {{
     console.log("{self.END_OUTPUT}");
     process.exit(1);
 }}
-"""  # noqa: W293
+"""
+
+    def _ensure_dependencies(self, workdir: str, container_name: str) -> None:
+        """Install and cache npm dependencies if package.json exists."""
+        package_json = os.path.join(workdir, "package.json")
+
+        if os.path.exists(package_json):
+            container_workdir = self._get_container_workdir(workdir)
+
+            # Install dependencies using cached node_modules
+            install_cmd = [
+                "npm",
+                "install",
+                "--no-save",  # Don't modify package.json
+                "--prefer-offline",  # Use cache when possible
+            ]
+
+            execute_in_container(
+                container_name, install_cmd, working_dir=container_workdir
+            )
 
     def run(
         self, workdir: str, function_name: str, input_args: list, input_data: str = None
     ) -> tuple:
         """Run a single test case."""
         self.ensure_image()
-        wrapper_path = self._prepare_workspace(workdir, function_name)
+
+        # Get configuration
+        config = get_config()
+
+        # Prepare paths
         container_name = self._container_name(workdir)
-        start_hot_container(self.docker_image, workdir, container_name)
+        problems_dir = self._get_problems_dir(workdir)
+        cache_dir = str(config.get_cache_dir())
+
+        # Start container
+        start_hot_container(
+            self.docker_image,
+            workdir,
+            container_name,
+            problems_dir=problems_dir,
+            cache_dir=cache_dir,
+        )
+
+        # Handle dependencies
+        if config.cache.dependency_cache:
+            self._ensure_dependencies(workdir, container_name)
+
+        # Prepare workspace
+        wrapper_path = self._prepare_workspace(workdir, function_name)
+        container_workdir = self._get_container_workdir(workdir)
 
         command = ["node", "main.js"] + [json.dumps(arg) for arg in input_args]
         stdout, stderr, exit_code = execute_in_container(
-            container_name, command, input_data=input_data
+            container_name,
+            command,
+            working_dir=container_workdir,
+            input_data=input_data,
         )
 
         stdout_lines = stdout.rstrip().splitlines()
@@ -164,8 +210,27 @@ try {{
     ) -> list:
         """Run multiple test cases efficiently."""
         self.ensure_image()
+
+        # Get configuration
+        config = get_config()
+
+        # Prepare paths
         container_name = self._container_name(workdir)
-        start_hot_container(self.docker_image, workdir, container_name)
+        problems_dir = self._get_problems_dir(workdir)
+        cache_dir = str(config.get_cache_dir())
+
+        # Start container
+        start_hot_container(
+            self.docker_image,
+            workdir,
+            container_name,
+            problems_dir=problems_dir,
+            cache_dir=cache_dir,
+        )
+
+        # Handle dependencies
+        if config.cache.dependency_cache:
+            self._ensure_dependencies(workdir, container_name)
 
         inputs_json_path = os.path.join(workdir, "inputs.json")
         driver_path = os.path.join(workdir, "test_driver.js")
@@ -181,9 +246,10 @@ try {{
                 f.write(driver_code)
 
             # Execute
+            container_workdir = self._get_container_workdir(workdir)
             command = ["node", "test_driver.js"]
             stdout, stderr, exit_code = execute_in_container(
-                container_name, command, input_data=None
+                container_name, command, working_dir=container_workdir, input_data=None
             )
 
             # Parse results using common helper

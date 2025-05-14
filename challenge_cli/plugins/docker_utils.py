@@ -3,6 +3,7 @@ import subprocess
 import time
 from typing import Optional, Tuple
 
+from challenge_cli.core.config import get_config
 from challenge_cli.core.logging import (
     log_context,
     log_debug,
@@ -66,63 +67,144 @@ def container_running(container_name: str) -> bool:
     return running
 
 
+@logged_operation("docker_container_healthy")
+def container_healthy(container_name: str) -> bool:
+    """Quick health check for container."""
+    try:
+        result = subprocess.run(
+            ["docker", "exec", container_name, "echo", "ok"],
+            capture_output=True,
+            timeout=1,
+        )
+        return result.returncode == 0 and result.stdout.strip() == b"ok"
+    except subprocess.TimeoutExpired:
+        return False
+
+
 @logged_operation("docker_start_hot_container")
 def start_hot_container(
-    image: str, workdir: str, container_name: str, sleep_seconds: int = 600
+    image: str,
+    workdir: str,
+    container_name: str,
+    problems_dir: str = None,
+    cache_dir: str = None,
 ) -> None:
     """Start a 'hot' container that stays alive for reuse."""
+    config = get_config()
+    sleep_seconds = config.docker.container_sleep
+
     with log_context(container=container_name, image=image):
-        if not container_running(container_name):
-            log_info(f"Starting hot container '{container_name}' from image '{image}'")
-            try:
-                subprocess.run(
-                    [
-                        "docker",
-                        "run",
-                        "-d",
-                        "--rm",
-                        "-e",
-                        "PYTHONDONTWRITEBYTECODE=1",
-                        "-v",
-                        f"{os.path.abspath(workdir)}:/workspace",
-                        "-w",
-                        "/workspace",
-                        "--name",
-                        container_name,
-                        image,
-                        "sleep",
-                        str(sleep_seconds),
-                    ],
-                    check=True,
-                )
-                log_info(f"Started container '{container_name}'")
-            except subprocess.CalledProcessError as e:
-                log_error(
-                    f"Failed to start container '{container_name}': {e}", exc_info=True
-                )
-                raise
+        if container_running(container_name):
+            if container_healthy(container_name):
+                log_debug(f"Container '{container_name}' already running and healthy")
+                _update_container_timestamp(container_name)
+                return
+            else:
+                log_warning(f"Container '{container_name}' unhealthy, restarting")
+                shutdown_container(container_name)
+
+        log_info(f"Starting hot container '{container_name}' from image '{image}'")
+
+        # Set up volume mounts
+        docker_cmd = [
+            "docker",
+            "run",
+            "-d",
+            "--rm",
+            "-e",
+            "PYTHONDONTWRITEBYTECODE=1",
+        ]
+
+        # Mount problems directory at root
+        if problems_dir:
+            mount_path = os.path.abspath(problems_dir)
+            docker_cmd.extend(["-v", f"{mount_path}:/workspace"])
+            log_debug(f"Mounting problems directory: {mount_path}")
         else:
-            log_debug(f"Container '{container_name}' already running")
-        _update_container_timestamp(container_name)
+            # Fallback to specific workdir mount
+            mount_path = os.path.abspath(workdir)
+            docker_cmd.extend(["-v", f"{mount_path}:/workspace"])
+            log_debug(f"Mounting workdir: {mount_path}")
+
+        # Mount cache directory if provided
+        if cache_dir:
+            cache_path = os.path.abspath(cache_dir)
+            os.makedirs(cache_path, exist_ok=True)
+            docker_cmd.extend(["-v", f"{cache_path}:/cache"])
+            log_debug(f"Mounting cache directory: {cache_path}")
+
+            # Set environment variables for language-specific caching
+            docker_cmd.extend(
+                [
+                    "-e",
+                    "GOCACHE=/cache/go/build",
+                    "-e",
+                    "GOMODCACHE=/cache/go/modules",
+                    "-e",
+                    "NODE_PATH=/cache/javascript/node_modules",
+                    "-e",
+                    "PYTHONPYCACHEPREFIX=/cache/python",
+                    "-e",
+                    "npm_config_cache=/cache/javascript/npm",
+                ]
+            )
+
+        # Complete the command
+        docker_cmd.extend(
+            [
+                "-w",
+                "/workspace",
+                "--name",
+                container_name,
+                image,
+                "sleep",
+                str(sleep_seconds),
+            ]
+        )
+
+        try:
+            subprocess.run(docker_cmd, check=True)
+            log_info(f"Started container '{container_name}'")
+        except subprocess.CalledProcessError as e:
+            log_error(
+                f"Failed to start container '{container_name}': {e}", exc_info=True
+            )
+            raise
 
 
 @logged_operation("docker_exec_in_container")
 def execute_in_container(
     container_name: str,
     command: list,
+    working_dir: Optional[str] = None,
     input_data: Optional[str] = None,
     timeout: int = 10,
 ) -> Tuple[str, str, int]:
     """
     Execute a command in a running container.
 
+    Args:
+        container_name: Name of the container
+        command: Command to execute
+        working_dir: Working directory inside the container
+        input_data: Optional stdin data
+        timeout: Command timeout in seconds
+
     Returns:
         Tuple of (stdout, stderr, exit_code)
     """
     with log_context(container=container_name):
         _update_container_timestamp(container_name)
-        docker_cmd = ["docker", "exec", container_name] + command
+
+        docker_cmd = ["docker", "exec"]
+
+        if working_dir:
+            docker_cmd.extend(["-w", working_dir])
+            log_debug(f"Using working directory: {working_dir}")
+
+        docker_cmd.extend([container_name] + command)
         log_debug(f"Executing in container '{container_name}': {' '.join(command)}")
+
         try:
             result = subprocess.run(
                 docker_cmd,
@@ -162,7 +244,7 @@ def shutdown_all_containers() -> None:
         ["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True
     )
     for name in result.stdout.splitlines():
-        if name.startswith("challenge-"):
+        if name.startswith("challenge-cli-"):  # Updated prefix
             log_info(f"Stopping container: {name}")
             shutdown_container(name)
     _cleanup_orphaned_timestamps()
@@ -201,7 +283,7 @@ def _remove_container_timestamp(container_name: str) -> None:
 def _cleanup_orphaned_timestamps() -> None:
     """Remove timestamp files for containers that no longer exist."""
     for filename in os.listdir("/tmp"):
-        if filename.startswith("challenge-") and filename.endswith(".lastused"):
+        if filename.startswith("challenge-cli-") and filename.endswith(".lastused"):
             timestamp_path = os.path.join("/tmp", filename)
             try:
                 os.remove(timestamp_path)
@@ -210,8 +292,3 @@ def _cleanup_orphaned_timestamps() -> None:
                 log_warning(
                     f"Failed to remove orphaned timestamp '{timestamp_path}': {e}"
                 )
-
-
-# Backwards compatibility aliases (deprecated)
-exec_in_hot_container = execute_in_container
-shutdown_hot_container = shutdown_container
