@@ -15,5 +15,16 @@ dependencies = [
     "rich>=13.0.0",  # Ensure we have the latest Rich features
 ]
 
+[project.optional-dependencies]
+dev = [
+    "ruff",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "W", "I"]  # Error, pyflakes, warnings, isort
+ignore = ["E501"]
+
 [project.scripts]
-challenge-cli = "challenge_cli.cli:app"
+challenge-cli = "challenge_cli.cli.app:app"

@@ -1,23 +1,27 @@
-import os
-import json
-import time  # Keep time import if needed elsewhere, otherwise remove
-import shutil
 import datetime
-import uuid # Add uuid import
-from typing import Dict, List, Any, Optional, Union
+import json
+import os
+import shutil
+import uuid  # Add uuid import
+from typing import Any, Dict, List, Optional
 
 # Import the consolidated helpers from utils
 from challenge_cli.utils import load_json, save_json
 
-HISTORY_DIR_NAME = ".history" # Public constant for use elsewhere (e.g., cli.py)
+HISTORY_DIR_NAME = ".history"  # Public constant for use elsewhere (e.g., cli.py)
+
 
 class HistoryManagerError(Exception):
     """Base exception for HistoryManager errors."""
+
     pass
+
 
 class SnapshotNotFoundError(HistoryManagerError):
     """Raised when a snapshot ID is not found."""
+
     pass
+
 
 class HistoryManager:
     """
@@ -27,10 +31,13 @@ class HistoryManager:
     Handles creating snapshots, storing test/performance data, pruning old
     snapshots, and retrieving historical information.
     """
-    _METADATA_FILENAME = "metadata.json" # Internal detail for top-level metadata
-    _SNAPSHOT_METADATA_FILENAME = "metadata.json" # Internal detail for snapshot metadata
-    _SNAPSHOTS_DIR_NAME = "snapshots" # Internal detail
-    _PERFORMANCE_DIR_NAME = "performance" # Internal detail
+
+    _METADATA_FILENAME = "metadata.json"  # Internal detail for top-level metadata
+    _SNAPSHOT_METADATA_FILENAME = (
+        "metadata.json"  # Internal detail for snapshot metadata
+    )
+    _SNAPSHOTS_DIR_NAME = "snapshots"  # Internal detail
+    _PERFORMANCE_DIR_NAME = "performance"  # Internal detail
     _TEST_RESULTS_DIR_NAME = "test_results"
 
     def __init__(self, challenge_dir: str, language: str, max_snapshots: int = 50):
@@ -56,11 +63,17 @@ class HistoryManager:
 
         # Define specific subdirectories (using internal names)
         self.snapshots_dir = os.path.join(self.history_dir, self._SNAPSHOTS_DIR_NAME)
-        self.performance_dir = os.path.join(self.history_dir, self._PERFORMANCE_DIR_NAME)
-        self.test_results_dir = os.path.join(self.history_dir, self._TEST_RESULTS_DIR_NAME)
+        self.performance_dir = os.path.join(
+            self.history_dir, self._PERFORMANCE_DIR_NAME
+        )
+        self.test_results_dir = os.path.join(
+            self.history_dir, self._TEST_RESULTS_DIR_NAME
+        )
 
         # Define file paths (using internal name for top-level metadata)
-        self.metadata_file_path = os.path.join(self.history_dir, self._METADATA_FILENAME)
+        self.metadata_file_path = os.path.join(
+            self.history_dir, self._METADATA_FILENAME
+        )
 
         self._ensure_directories_exist()
         self._initialize_metadata_if_needed()
@@ -69,8 +82,12 @@ class HistoryManager:
 
     def _ensure_directories_exist(self) -> None:
         """Ensure all required history directories exist."""
-        for directory in [self.history_dir, self.snapshots_dir,
-                          self.performance_dir, self.test_results_dir]:
+        for directory in [
+            self.history_dir,
+            self.snapshots_dir,
+            self.performance_dir,
+            self.test_results_dir,
+        ]:
             os.makedirs(directory, exist_ok=True)
 
     # _load_json and _save_json were removed in the previous (partial) application
@@ -90,7 +107,9 @@ class HistoryManager:
     def _get_snapshot_metadata_path(self, snapshot_id: str) -> str:
         """Get the absolute path to the metadata file of a specific snapshot."""
         # Use internal constant for snapshot metadata filename
-        return os.path.join(self._get_snapshot_path(snapshot_id), self._SNAPSHOT_METADATA_FILENAME)
+        return os.path.join(
+            self._get_snapshot_path(snapshot_id), self._SNAPSHOT_METADATA_FILENAME
+        )
 
     # --- Metadata Management ---
 
@@ -102,9 +121,9 @@ class HistoryManager:
                 "settings": {
                     "max_snapshots": self.max_snapshots,
                 },
-                "languages": {}
+                "languages": {},
             }
-            save_json(self.metadata_file_path, initial_metadata) # Use util function
+            save_json(self.metadata_file_path, initial_metadata)  # Use util function
 
     def _load_metadata(self) -> Dict:
         """Load the main history metadata."""
@@ -115,7 +134,7 @@ class HistoryManager:
 
     def _save_metadata(self, metadata: Dict) -> None:
         """Save the main history metadata."""
-        save_json(self.metadata_file_path, metadata) # Use util function
+        save_json(self.metadata_file_path, metadata)  # Use util function
 
     def _update_language_metadata(self, snapshot_id: Optional[str] = None) -> None:
         """Update language-specific metadata, typically after taking a snapshot."""
@@ -127,7 +146,7 @@ class HistoryManager:
                 "first_snapshot_at": now_iso,
                 "snapshot_count": 0,
                 "latest_snapshot_id": None,
-                "latest_snapshot_at": None # Initialize explicitly
+                "latest_snapshot_at": None,  # Initialize explicitly
             }
 
         lang_meta = metadata["languages"][self.language]
@@ -159,7 +178,7 @@ class HistoryManager:
         try:
             all_items = os.listdir(self.snapshots_dir)
         except FileNotFoundError:
-            return [] # Snapshots directory might not exist yet if no snapshots made
+            return []  # Snapshots directory might not exist yet if no snapshots made
 
         # Filter snapshots by checking language in metadata and sort by creation time
         language_snapshots_with_time = []
@@ -171,13 +190,15 @@ class HistoryManager:
             metadata_path = self._get_snapshot_metadata_path(item_id)
             try:
                 # Use the utility function to load metadata safely
-                metadata = load_json(metadata_path, default=None) # Default to None to distinguish missing/corrupt
+                metadata = load_json(
+                    metadata_path, default=None
+                )  # Default to None to distinguish missing/corrupt
                 if metadata and metadata.get("language") == self.language:
                     # Use ISO format timestamp from metadata for reliable sorting
                     created_at_iso = metadata.get("created_at", "")
-                    if created_at_iso: # Only include if timestamp exists
-                         language_snapshots_with_time.append((created_at_iso, item_id))
-            except Exception as e:
+                    if created_at_iso:  # Only include if timestamp exists
+                        language_snapshots_with_time.append((created_at_iso, item_id))
+            except Exception:
                 # Log or print warning about issues reading metadata? For now, just skip.
                 # print(f"Warning: Could not process metadata for {item_id}: {e}")
                 continue
@@ -188,10 +209,19 @@ class HistoryManager:
         # Extract just the IDs after sorting
         language_snapshot_ids = [item_id for _, item_id in language_snapshots_with_time]
 
-        return language_snapshot_ids[:limit] if limit is not None else language_snapshot_ids
+        return (
+            language_snapshot_ids[:limit]
+            if limit is not None
+            else language_snapshot_ids
+        )
 
-    def create_snapshot(self, solution_file_path: str, function_name: str,
-                        tag: Optional[str] = None, comment: Optional[str] = None) -> str:
+    def create_snapshot(
+        self,
+        solution_file_path: str,
+        function_name: str,
+        tag: Optional[str] = None,
+        comment: Optional[str] = None,
+    ) -> str:
         """
         Create a new snapshot of the current solution file.
 
@@ -224,7 +254,9 @@ class HistoryManager:
             # Copy solution file, preserving metadata (like modification time)
             solution_filename = os.path.basename(solution_file_path)
             snapshot_solution_path = os.path.join(snapshot_dir, solution_filename)
-            shutil.copy2(solution_file_path, snapshot_solution_path) # copy2 preserves metadata
+            shutil.copy2(
+                solution_file_path, snapshot_solution_path
+            )  # copy2 preserves metadata
 
             # Create snapshot metadata
             snapshot_metadata = {
@@ -233,7 +265,7 @@ class HistoryManager:
                 "original_filename": solution_filename,
                 "function_name": function_name,
                 "tag": tag,
-                "comment": comment
+                "comment": comment,
             }
 
             # Save snapshot metadata using the util function
@@ -247,8 +279,12 @@ class HistoryManager:
                     shutil.rmtree(snapshot_dir)
                 except OSError:
                     # Log this cleanup failure, but prioritize the original error
-                    print(f"Warning: Failed to clean up partially created snapshot directory {snapshot_dir}")
-            raise HistoryManagerError(f"Failed to create snapshot {snapshot_id}: {e}") from e
+                    print(
+                        f"Warning: Failed to clean up partially created snapshot directory {snapshot_dir}"
+                    )
+            raise HistoryManagerError(
+                f"Failed to create snapshot {snapshot_id}: {e}"
+            ) from e
 
         # Update overall history metadata
         self._update_language_metadata(snapshot_id)
@@ -265,17 +301,19 @@ class HistoryManager:
 
         if len(snapshot_ids) > self.max_snapshots:
             # Identify snapshots to remove (the oldest ones)
-            snapshots_to_remove = snapshot_ids[self.max_snapshots:]
+            snapshots_to_remove = snapshot_ids[self.max_snapshots :]
 
             for snapshot_id in snapshots_to_remove:
                 snapshot_path = self._get_snapshot_path(snapshot_id)
                 try:
-                    if os.path.isdir(snapshot_path): # Double check it's a directory
+                    if os.path.isdir(snapshot_path):  # Double check it's a directory
                         shutil.rmtree(snapshot_path)
                         # print(f"Pruned old snapshot: {snapshot_id}") # Optional: for debugging/verbose output
                 except OSError as e:
                     # Log the error but continue pruning others
-                    print(f"Warning: Failed to remove old snapshot {snapshot_id} at {snapshot_path}: {e}")
+                    print(
+                        f"Warning: Failed to remove old snapshot {snapshot_id} at {snapshot_path}: {e}"
+                    )
                     # Consider logging this error more formally
 
     # --- Performance History ---
@@ -294,9 +332,9 @@ class HistoryManager:
         # Basic validation: ensure it's a list
         return history if isinstance(history, list) else []
 
-
-    def add_performance_record(self, case_num: int, metrics: Dict[str, Any],
-                               snapshot_id: Optional[str] = None) -> None:
+    def add_performance_record(
+        self, case_num: int, metrics: Dict[str, Any], snapshot_id: Optional[str] = None
+    ) -> None:
         """
         Add a new performance record to the history for the current language.
 
@@ -310,7 +348,7 @@ class HistoryManager:
             HistoryManagerError: If saving the performance data fails.
         """
         performance_file_path = self._get_performance_file_path()
-        records = self.get_performance_history() # Use the getter to load safely
+        records = self.get_performance_history()  # Use the getter to load safely
 
         # Create new record
         new_record = {
@@ -318,7 +356,7 @@ class HistoryManager:
             "language": self.language,
             "case_num": case_num,
             "metrics": metrics,
-            "snapshot_id": snapshot_id
+            "snapshot_id": snapshot_id,
         }
 
         records.append(new_record)
@@ -342,7 +380,9 @@ class HistoryManager:
         # Basic validation: ensure it's a list
         return history if isinstance(history, list) else []
 
-    def add_test_results(self, results: List[Dict], snapshot_id: Optional[str] = None) -> None:
+    def add_test_results(
+        self, results: List[Dict], snapshot_id: Optional[str] = None
+    ) -> None:
         """
         Add a new set of test results to the history for the current language.
 
@@ -356,14 +396,14 @@ class HistoryManager:
             HistoryManagerError: If saving the test results fails.
         """
         test_results_file_path = self._get_test_results_file_path()
-        records = self.get_test_history() # Use the getter to load safely
+        records = self.get_test_history()  # Use the getter to load safely
 
         # Calculate summary within the new record
         passed_count = sum(1 for r in results if r.get("passed", False))
         summary = {
             "total": len(results),
             "passed": passed_count,
-            "failed": len(results) - passed_count
+            "failed": len(results) - passed_count,
         }
 
         # Create new record for this test run
@@ -372,7 +412,7 @@ class HistoryManager:
             "language": self.language,
             "results": results,
             "snapshot_id": snapshot_id,
-            "summary": summary
+            "summary": summary,
         }
 
         records.append(new_record)
@@ -411,39 +451,52 @@ class HistoryManager:
         metadata_path = self._get_snapshot_metadata_path(snapshot_id)
 
         if not os.path.isdir(snapshot_dir):
-            raise SnapshotNotFoundError(f"Snapshot directory not found for ID: {snapshot_id}")
+            raise SnapshotNotFoundError(
+                f"Snapshot directory not found for ID: {snapshot_id}"
+            )
 
         try:
             # Load snapshot metadata using util function
             metadata = load_json(metadata_path)
             if not metadata or "original_filename" not in metadata:
-                 # Fallback: find the first non-metadata file if metadata is missing/corrupt
-                 for filename in os.listdir(snapshot_dir):
-                     # Use internal constant for snapshot metadata filename
-                     if filename != self._SNAPSHOT_METADATA_FILENAME:
-                         solution_filename = filename
-                         break
-                 else: # No non-metadata file found
-                     raise HistoryManagerError(f"Could not determine solution filename in snapshot {snapshot_id}")
+                # Fallback: find the first non-metadata file if metadata is missing/corrupt
+                for filename in os.listdir(snapshot_dir):
+                    # Use internal constant for snapshot metadata filename
+                    if filename != self._SNAPSHOT_METADATA_FILENAME:
+                        solution_filename = filename
+                        break
+                else:  # No non-metadata file found
+                    raise HistoryManagerError(
+                        f"Could not determine solution filename in snapshot {snapshot_id}"
+                    )
             else:
                 solution_filename = metadata["original_filename"]
 
             solution_path = os.path.join(snapshot_dir, solution_filename)
 
             if not os.path.isfile(solution_path):
-                 raise SnapshotNotFoundError(f"Solution file '{solution_filename}' not found in snapshot {snapshot_id}")
+                raise SnapshotNotFoundError(
+                    f"Solution file '{solution_filename}' not found in snapshot {snapshot_id}"
+                )
 
-            with open(solution_path, 'r', encoding='utf-8') as f:
+            with open(solution_path, "r", encoding="utf-8") as f:
                 return f.read()
 
-        except FileNotFoundError as e: # Handles case where metadata exists but file doesn't
-             raise SnapshotNotFoundError(f"Solution file not found for snapshot {snapshot_id}: {e}") from e
+        except (
+            FileNotFoundError
+        ) as e:  # Handles case where metadata exists but file doesn't
+            raise SnapshotNotFoundError(
+                f"Solution file not found for snapshot {snapshot_id}: {e}"
+            ) from e
         except (IOError, OSError) as e:
-            raise HistoryManagerError(f"Error reading solution file for snapshot {snapshot_id}: {e}") from e
+            raise HistoryManagerError(
+                f"Error reading solution file for snapshot {snapshot_id}: {e}"
+            ) from e
         except json.JSONDecodeError as e:
-             # Handle case where snapshot metadata is corrupt
-             raise HistoryManagerError(f"Error reading metadata for snapshot {snapshot_id}: {e}") from e
-
+            # Handle case where snapshot metadata is corrupt
+            raise HistoryManagerError(
+                f"Error reading metadata for snapshot {snapshot_id}: {e}"
+            ) from e
 
     def get_snapshot_info(self, snapshot_id: str) -> Dict:
         """
@@ -462,17 +515,25 @@ class HistoryManager:
         metadata_path = self._get_snapshot_metadata_path(snapshot_id)
 
         try:
-            metadata = load_json(metadata_path) # Use util function
-            if not metadata: # Check if load_json returned empty dict due to FileNotFoundError or decode error
-                 if not os.path.exists(metadata_path):
-                     raise SnapshotNotFoundError(f"Metadata file not found for snapshot ID: {snapshot_id}")
-                 else:
-                     # File exists but couldn't be decoded or is empty
-                     raise HistoryManagerError(f"Metadata file for snapshot {snapshot_id} is empty or corrupt.")
+            metadata = load_json(metadata_path)  # Use util function
+            if (
+                not metadata
+            ):  # Check if load_json returned empty dict due to FileNotFoundError or decode error
+                if not os.path.exists(metadata_path):
+                    raise SnapshotNotFoundError(
+                        f"Metadata file not found for snapshot ID: {snapshot_id}"
+                    )
+                else:
+                    # File exists but couldn't be decoded or is empty
+                    raise HistoryManagerError(
+                        f"Metadata file for snapshot {snapshot_id} is empty or corrupt."
+                    )
             return metadata
-        except SnapshotNotFoundError: # Re-raise specific error
+        except SnapshotNotFoundError:  # Re-raise specific error
             raise
-        except HistoryManagerError: # Re-raise specific error
-             raise
-        except Exception as e: # Catch unexpected errors during loading
-             raise HistoryManagerError(f"Unexpected error loading metadata for snapshot {snapshot_id}: {e}") from e
+        except HistoryManagerError:  # Re-raise specific error
+            raise
+        except Exception as e:  # Catch unexpected errors during loading
+            raise HistoryManagerError(
+                f"Unexpected error loading metadata for snapshot {snapshot_id}: {e}"
+            ) from e
