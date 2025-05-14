@@ -38,3 +38,15 @@ class ValidationError(ChallengeCLIError):
     """Raised when input validation fails."""
 
     pass
+
+
+class HistoryManagerError(Exception):
+    """Base exception for HistoryManager errors."""
+
+    pass
+
+
+class SnapshotNotFoundError(HistoryManagerError):
+    """Raised when a snapshot ID is not found."""
+
+    pass

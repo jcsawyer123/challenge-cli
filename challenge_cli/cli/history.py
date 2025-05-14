@@ -7,7 +7,7 @@ from typing import Optional
 import typer
 
 from challenge_cli.core.logging import log_warning
-from challenge_cli.output import console
+from challenge_cli.output.terminal import console
 
 from .completions import Completions
 from .decorators import with_error_handling

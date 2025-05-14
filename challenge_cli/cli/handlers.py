@@ -12,7 +12,7 @@ from challenge_cli.core.logging import (
     logged_operation,
 )
 from challenge_cli.plugins.docker_utils import shutdown_all_containers
-from challenge_cli.tester import ChallengeTester
+from challenge_cli.runners.orchestrator import ChallengeTester
 
 from .options import ResolvedOptions
 

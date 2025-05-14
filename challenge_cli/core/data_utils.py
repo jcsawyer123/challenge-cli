@@ -1,65 +1,18 @@
-import datetime
 import json
 from typing import Any, Dict, List, Optional, Set, Union
-
-# --- Formatting ---
-
-
-def format_time(seconds: float) -> str:
-    """
-    Format time in the most appropriate unit:
-    - <1μs: ns
-    - <1ms: μs
-    - <1s: ms
-    - >=1s: s
-    """
-    if seconds < 1e-6:
-        return f"{seconds * 1e9:.2f} ns"
-    elif seconds < 1e-3:
-        return f"{seconds * 1e6:.2f} μs"
-    elif seconds < 1:
-        return f"{seconds * 1000:.2f} ms"
-    else:
-        return f"{seconds:.6f} s"
-
-
-def format_relative_time(iso_str: str) -> str:
-    """Format an ISO timestamp as relative time."""
-    try:
-        dt = datetime.datetime.fromisoformat(iso_str)
-        now = datetime.datetime.now(dt.tzinfo)
-        delta = now - dt
-        seconds = int(delta.total_seconds())
-
-        if seconds < 60:
-            return f"{seconds}s ago"
-        elif seconds < 3600:
-            return f"{seconds // 60}m ago"
-        elif seconds < 86400:
-            return f"{seconds // 3600}h ago"
-        else:
-            return f"{seconds // 86400}d ago"
-    except Exception:
-        return "?"
-
-
-def format_memory(bytes_value: int) -> str:
-    """Format memory size in appropriate units."""
-    for unit in ["B", "KB", "MB", "GB"]:
-        if bytes_value < 1024 or unit == "GB":
-            return f"{bytes_value:.2f} {unit}"
-        bytes_value /= 1024
-    return f"{bytes_value:.2f} GB"
-
-
-# --- JSON Handling ---
 
 
 def load_json(
     file_path: str, default: Optional[Union[List, Dict]] = None
 ) -> Union[List, Dict]:
-    """Load JSON data from a file,
-        returning a default value if it doesn't exist or is invalid."""
+    """
+    Load JSON data from a file, returning a default value if it doesn't exist or is invalid.
+    Args:
+        file_path: Path to JSON file
+        default: Default value to return if file doesn't exist or is invalid
+    Returns:
+        Parsed JSON data or default value
+    """
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -72,16 +25,20 @@ def load_json(
 
 
 def save_json(file_path: str, data: Union[List, Dict]) -> None:
-    """Save data to a JSON file."""
+    """
+    Save data to a JSON file.
+    Args:
+        file_path: Path to save JSON file
+        data: Data to save
+    Raises:
+        IOError: If file cannot be written
+    """
     try:
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except IOError as e:
         print(f"Error: Could not write JSON to {file_path}: {e}")
         raise
-
-
-# --- Test Case Handling ---
 
 
 def parse_cases_arg(cases_arg: Optional[str], total_cases: int) -> Set[int]:
@@ -91,6 +48,11 @@ def parse_cases_arg(cases_arg: Optional[str], total_cases: int) -> Set[int]:
     Examples:
         - "1,3,5-7" -> {1, 3, 5, 6, 7}
         - None -> {1, 2, ..., total_cases}
+    Args:
+        cases_arg: Comma-separated string of cases/ranges
+        total_cases: Total number of available cases
+    Returns:
+        Set of case numbers to run
     """
     if not cases_arg:
         return set(range(1, total_cases + 1))
@@ -140,6 +102,11 @@ def compare_results(result: Any, expected: Any) -> bool:
 
     - For lists, compares without considering order for simple types
     - Attempts to parse JSON strings before comparison
+    Args:
+        result: Actual result from test execution
+        expected: Expected result from test case
+    Returns:
+        True if results match, False otherwise
     """
     # Attempt to parse expected if it's a string that looks like JSON
     if isinstance(expected, str):
@@ -183,6 +150,10 @@ def compare_results(result: Any, expected: Any) -> bool:
 def parse_result(stdout: str) -> Any:
     """
     Attempt to parse stdout as JSON, otherwise return stripped string.
+    Args:
+        stdout: Standard output from test execution
+    Returns:
+        Parsed JSON if valid, otherwise stripped string
     """
     stdout_stripped = stdout.strip()
     try:

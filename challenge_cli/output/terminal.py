@@ -12,7 +12,11 @@ from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
-from challenge_cli.utils import format_memory, format_relative_time, format_time
+from challenge_cli.core.formatting import (
+    format_memory,
+    format_relative_time,
+    format_time,
+)
 
 # ==============================================================================
 # Constants & Global Console

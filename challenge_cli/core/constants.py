@@ -1,4 +1,3 @@
-# challenge_cli/core/constants.py
 """
 Constants used throughout the application.
 """

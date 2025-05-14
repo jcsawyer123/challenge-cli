@@ -5,8 +5,7 @@ Autocompletion functions for Challenge CLI.
 import os
 from typing import List
 
-from challenge_cli.core.config import load_config_file
-from challenge_cli.history_manager import HISTORY_DIR_NAME
+from challenge_cli.core.config import HISTORY_DIR_NAME, load_config_file
 
 
 class Completions:

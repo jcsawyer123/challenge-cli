@@ -7,7 +7,7 @@ from typing import Optional
 import typer
 
 from challenge_cli.core.logging import log_warning
-from challenge_cli.output import console
+from challenge_cli.output.terminal import console
 
 # Import history commands to register them
 from . import history
