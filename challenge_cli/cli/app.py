@@ -457,6 +457,5 @@ def clean(
         CommandHandlers.handle_clean(options)
 
 
-
 if __name__ == "__main__":
     app()

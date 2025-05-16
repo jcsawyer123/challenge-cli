@@ -23,7 +23,6 @@ def register_plugin(plugin_cls: Type[LanguagePlugin]):
     # Register aliases
     for alias in getattr(plugin, "aliases", []):
         constants.LANGUAGE_ALIASES[alias] = plugin.name
-
     # Register template
     if hasattr(plugin, "solution_template"):
         constants.SOLUTION_TEMPLATES[plugin.name] = plugin.solution_template

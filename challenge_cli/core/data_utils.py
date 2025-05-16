@@ -147,7 +147,7 @@ def compare_results(result: Any, expected: Any) -> bool:
     return result == expected
 
 
-def parse_result(stdout: str) -> Any:
+def parse_result(stdout: str) -> Union[Dict[str, Any], List[Any], str]:
     """
     Attempt to parse stdout as JSON, otherwise return stripped string.
     Args:
