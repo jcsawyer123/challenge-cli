@@ -1,8 +1,14 @@
+import json
 import os
 from abc import ABC, abstractmethod
 from typing import List, Tuple
 
-from challenge_cli.core.config import get_config
+from challenge_cli.core.config import ChallengeConfig, get_config
+from challenge_cli.plugins.docker_utils import (
+    ensure_docker_image,
+    execute_in_container,
+    start_hot_container,
+)
 
 
 class LanguagePlugin(ABC):
@@ -25,7 +31,6 @@ class LanguagePlugin(ABC):
     solution_filename: str = None
 
     # Common markers used across all languages
-    PROFILE_MARKER = "LEETCODE_PROFILE:"
     ERROR_MARKER = "PROFILE_ERROR:"
     FUNCTION_ERROR_MARKER = "FUNCTION_ERROR:"
     SEPARATOR = "---SEPARATOR---"
@@ -46,78 +51,239 @@ class LanguagePlugin(ABC):
         pass
 
     @abstractmethod
-    def ensure_image(self):
-        """
-        Ensure the Docker image for this plugin is available.
-        Should build the image if it does not exist.
-        """
-        pass
-
-    def generate_wrapper_template(self, function_name: str) -> str:
-        """
-        Generate the wrapper template for single test execution.
-        Can be overridden by subclasses for language-specific needs.
-        """
-        raise NotImplementedError("Subclasses must implement generate_wrapper_template")
-
     def generate_test_driver_template(self, function_name: str) -> str:
         """
         Generate the test driver template for batch execution.
-        Can be overridden by subclasses for language-specific needs.
-        """
-        raise NotImplementedError(
-            "Subclasses must implement generate_test_driver_template"
-        )
-
-    @abstractmethod
-    def run(self, workdir, function_name, input_args, input_data=None):
-        """
-        Run a single test case.
+        Must be implemented by subclasses for language-specific needs.
 
         Args:
-            workdir (str): Path to the language-specific directory (mounted as /workspace).
-            function_name (str): Name of the function/method to call.
-            input_args (list): Arguments to pass to the function (JSON-serializable).
-            input_data (str, optional): String to pass to stdin (if needed).
+            function_name: Name of the function to test
 
         Returns:
-            tuple:
+            String containing the test driver code
+        """
+        pass
+
+    @abstractmethod
+    def _parse_single_case_output(
+        self, case_output: str, stderr: str, exit_code: int, case_index: int
+    ) -> Tuple:
+        """
+        Parse output for a single test case in batch execution.
+        Must be implemented by subclasses.
+
+        Args:
+            case_output: Output for a single test case
+            stderr: Error output for the entire batch
+            exit_code: Exit code of the process
+            case_index: Index of the test case in the batch
+
+        Returns:
+            Tuple of (result, stdout, stderr, exit_code, exec_time,
+                     max_rss_kb, profile_info)
+        """
+        pass
+
+    def ensure_image(self):
+        """
+        Ensure the Docker image for this plugin is available.
+        Builds the image if it does not exist.
+        """
+        ensure_docker_image(
+            self.docker_image,
+            self.dockerfile_path,
+            context_dir=os.path.dirname(self.dockerfile_path),
+        )
+
+    def run_many(
+        self,
+        workdir: str,
+        function_name: str,
+        input_args_list: list,
+    ) -> list:
+        """
+        Template method: Run multiple test cases efficiently.
+
+        Args:
+            workdir (str): Path to the language-specific directory.
+            function_name (str): Name of the function/method to call.
+            input_args_list (list of list): Arguments for each test case.
+
+        Returns:
+            list of tuple: Each tuple contains:
                 result (any): Parsed return value from the function.
                 extra_stdout (str): Any extra stdout (may be empty).
                 stderr (str): Stderr from the process.
                 exit_code (int): Process exit code.
                 exec_time (float or None): Wall time for the run (seconds), or None.
                 max_rss_kb (int or None): Max memory used (KB), or None.
-                profile_info (dict or None): Function-only profiling info, e.g., {"time_ms": float, "mem_bytes": int}, or None.
+                profile_info (dict or None): Function-only profiling info.
+        """
+        self.ensure_image()
+
+        # Get configuration
+        config = get_config()
+
+        # Prepare paths
+        container_name = self._container_name(workdir)
+        problems_dir = self._get_problems_dir(workdir)
+        cache_dir = str(config.get_cache_dir())
+
+        # Start container
+        start_hot_container(
+            self.docker_image,
+            workdir,
+            container_name,
+            problems_dir=problems_dir,
+            cache_dir=cache_dir,
+        )
+
+        # Handle dependencies - Hook method (optional)
+        self._handle_dependencies(workdir, container_name, config)
+
+        inputs_json_path = os.path.join(workdir, "inputs.json")
+        driver_path = os.path.join(workdir, self._get_driver_filename())
+
+        try:
+            # Write inputs
+            with open(inputs_json_path, "w") as f:
+                json.dump(input_args_list, f)
+
+            # Write driver
+            driver_code = self.generate_test_driver_template(function_name)
+            with open(driver_path, "w") as f:
+                f.write(driver_code)
+
+            # Execute
+            container_workdir = self._get_container_workdir(workdir)
+            command = self._get_batch_command(driver_path)
+            stdout, stderr, exit_code = execute_in_container(
+                container_name, command, working_dir=container_workdir, input_data=None
+            )
+
+            # Parse results using common helper
+            return self._parse_batch_output(stdout, stderr, exit_code, input_args_list)
+
+        finally:
+            self._cleanup_files(inputs_json_path, driver_path)
+
+    def _handle_dependencies(
+        self, workdir: str, container_name: str, config: ChallengeConfig
+    ) -> None:
+        """
+        Handle language-specific dependencies. Default is no-op.
+        Override in subclasses if needed.
+
+        Args:
+            workdir: Path to language-specific directory
+            container_name: Name of the Docker container
+            config: Configuration object
+        """
+        pass  # Default implementation does nothing
+
+    @abstractmethod
+    def _get_batch_command(self, driver_path: str) -> list:
+        """
+        Get the command to run for batch testing.
+        Must be implemented by subclasses.
+
+        Args:
+            driver_path: Path to the driver file
+
+        Returns:
+            List of command arguments
         """
         pass
 
     @abstractmethod
-    def run_many(self, workdir, function_name, input_args_list, input_data_list=None):
+    def _get_driver_filename(self) -> str:
         """
-        Run multiple test cases efficiently (e.g., in a persistent container).
-
-        Args:
-            workdir (str): Path to the language-specific directory.
-            function_name (str): Name of the function/method to call.
-            input_args_list (list of list): Arguments for each test case.
-            input_data_list (list of str, optional): Stdin strings for each test case.
+        Get the filename for the test driver file.
 
         Returns:
-            list of tuple: Each tuple as described in `run()`.
+            String with the driver filename
         """
         pass
 
-    def _container_name(self, workdir):
+    def _parse_batch_output(
+        self, stdout: str, stderr: str, exit_code: int, batch_inputs: list
+    ) -> List[Tuple]:
         """
-        Generate a container name based on language and configuration.
+        Common batch output parsing logic.
 
         Args:
-            workdir (str): Path to the language-specific directory.
+            stdout: Standard output
+            stderr: Standard error
+            exit_code: Exit code
+            batch_inputs: List of batch inputs
 
         Returns:
-            str: Container name.
+            List of result tuples, each containing:
+            (result, stdout, stderr, exit_code, exec_time, max_rss_kb, profile_info)
         """
+        final_results = []
+
+        # Check for critical errors
+        if exit_code != 0 and self.ERROR_MARKER in stderr:
+            final_results.append(
+                (
+                    "Batch execution failed due to driver error",
+                    "",
+                    stderr,
+                    exit_code,
+                    None,
+                    None,
+                    None,
+                )
+            )
+            return final_results
+
+        if not stdout or self.END_OUTPUT not in stdout:
+            error_message = "Execution failed or malformed output (missing end marker)"
+            if stdout and stdout.strip():
+                error_message += f"\nStdout: {stdout}"
+            if stderr and stderr.strip():
+                error_message += f"\nStderr: {stderr}"
+            final_results.append(
+                (error_message, "", stderr, exit_code, None, None, None)
+            )
+            return final_results
+
+        # Extract main output
+        main_output = stdout.split(self.END_OUTPUT)[0].strip()
+        case_outputs = main_output.split(self.SEPARATOR)
+
+        # Parse each case
+        for i, case_output in enumerate(case_outputs):
+            if not case_output.strip():
+                continue
+
+            if i >= len(batch_inputs):
+                break
+
+            result = self._parse_single_case_output(
+                case_output.strip(), stderr, exit_code, i
+            )
+            final_results.append(result)
+
+        # Fill in missing results
+        while len(final_results) < len(batch_inputs):
+            final_results.append(
+                (
+                    "Test case did not run or produce output",
+                    "",
+                    stderr,
+                    exit_code,
+                    None,
+                    None,
+                    None,
+                )
+            )
+
+        return final_results[: len(batch_inputs)]
+
+    def _container_name(self, workdir):
+        """Generate a container name based on language and configuration."""
         config = get_config()
 
         if config.docker.container_sharing == "per-language":
@@ -161,8 +327,6 @@ class LanguagePlugin(ABC):
         problems_dir = self._get_problems_dir(workdir)
         return self._to_container_path(workdir, problems_dir)
 
-    # Common helper methods that can be used by subclasses
-
     def _cleanup_files(self, *file_paths):
         """Remove temporary files, ignoring errors."""
         for file_path in file_paths:
@@ -180,84 +344,6 @@ class LanguagePlugin(ABC):
             (None, stdout, stderr, exit_code, None, None, None)
             for _ in range(num_inputs)
         ]
-
-    def _parse_batch_output(
-        self, stdout: str, stderr: str, exit_code: int, batch_inputs: list
-    ) -> List[Tuple]:
-        """
-        Common batch output parsing logic.
-        Can be overridden by subclasses for language-specific needs.
-        """
-        final_results = []
-
-        # Check for critical errors
-        if exit_code != 0 and self.ERROR_MARKER in stderr:
-            final_results.append(
-                (
-                    "Batch execution failed due to driver error",
-                    "",
-                    stderr,
-                    exit_code,
-                    None,
-                    None,
-                    None,
-                )
-            )
-            return final_results
-
-        if self.END_OUTPUT not in stdout:
-            error_message = "Execution failed or malformed output (missing end marker)"
-            if stdout.strip():
-                error_message += f"\nStdout: {stdout}"
-            if stderr.strip():
-                error_message += f"\nStderr: {stderr}"
-            final_results.append(
-                (error_message, "", stderr, exit_code, None, None, None)
-            )
-            return final_results
-
-        # Extract main output
-        main_output = stdout.split(self.END_OUTPUT)[0].strip()
-        case_outputs = main_output.split(self.SEPARATOR)
-
-        # Parse each case
-        for i, case_output in enumerate(case_outputs):
-            if not case_output.strip():
-                continue
-
-            if i >= len(batch_inputs):
-                break
-
-            result = self._parse_single_case_output(
-                case_output.strip(), stderr, exit_code, i
-            )
-            final_results.append(result)
-
-        # Fill in missing results
-        while len(final_results) < len(batch_inputs):
-            final_results.append(
-                (
-                    "Test case did not run or produce output",
-                    "",
-                    stderr,
-                    exit_code,
-                    None,
-                    None,
-                    None,
-                )
-            )
-
-        return final_results[: len(batch_inputs)]
-
-    @abstractmethod
-    def _parse_single_case_output(
-        self, case_output: str, stderr: str, exit_code: int, case_index: int
-    ) -> Tuple:
-        """
-        Parse output for a single test case in batch execution.
-        Must be implemented by subclasses.
-        """
-        raise NotImplementedError("Subclasses must implement _parse_single_case_output")
 
     def get_cache_key(self, workdir: str) -> str:
         """Get a cache key for this solution."""

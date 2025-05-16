@@ -196,36 +196,45 @@ class ChallengeTester:
     ) -> None:
         """Initialize the directory structure and necessary files for a new challenge."""
         try:
-            plugin = get_plugin(language)
+            # Resolve language alias first using registry.resolve_language
+            from challenge_cli.plugins.registry import resolve_language
+
+            resolved_language = resolve_language(language)
+            plugin = get_plugin(resolved_language)
+
+            if not plugin:
+                print_error(
+                    "N/A",
+                    f"No plugin found for language '{resolved_language}'",
+                    detailed=True,
+                )
+                return
+
+            # Initialize solution file
+            self.solution_manager.initialize_solution(resolved_language, function_name)
+
+            # Initialize test cases file
+            self.test_data_manager.initialize_testcases_file(
+                resolved_language, function_name
+            )
+
+            # Initialize history tracking
+            history_manager = self._initialize_history_manager(resolved_language)
+            if self.use_history and history_manager:
+                self._create_snapshot_if_enabled(
+                    history_manager=history_manager,
+                    language=resolved_language,
+                    function_name=function_name,
+                    tag="initial",
+                    comment="Initial solution template",
+                    detailed=False,
+                )
+
+            print_info(f"-> Test cases file: {self.test_data_manager.testcases_file}")
+
         except ValueError as e:
             print_error("N/A", str(e), detailed=True)
             return
-
-        if not plugin:
-            print_error(
-                "N/A", f"No plugin found for language '{language}'", detailed=True
-            )
-            return
-
-        # Initialize solution file
-        self.solution_manager.initialize_solution(language, function_name)
-
-        # Initialize test cases file
-        self.test_data_manager.initialize_testcases_file(language, function_name)
-
-        # Initialize history tracking
-        history_manager = self._initialize_history_manager(language)
-        if self.use_history and history_manager:
-            self._create_snapshot_if_enabled(
-                history_manager=history_manager,
-                language=language,
-                function_name=function_name,
-                tag="initial",
-                comment="Initial solution template",
-                detailed=False,
-            )
-
-        print_info(f"-> Test cases file: {self.test_data_manager.testcases_file}")
 
     def run_tests(
         self,

@@ -1,17 +1,14 @@
 import json
 import os
 
-from challenge_cli.core.config import get_config
+from challenge_cli.plugins.docker_utils import execute_in_container
 
-from ..docker_utils import (
-    ensure_docker_image,
-    execute_in_container,
-    start_hot_container,
-)
 from ..language_plugin import LanguagePlugin
 
 
 class GoPlugin(LanguagePlugin):
+    """Go language plugin for the Challenge CLI."""
+
     name = "go"
     aliases = ["golang"]
     docker_image = "go-runner:1.22"
@@ -19,14 +16,6 @@ class GoPlugin(LanguagePlugin):
         os.path.dirname(__file__), "dockerfiles", "Dockerfile.go"
     )
     solution_filename = "solution.go"
-
-    def ensure_image(self):
-        """Ensure the Docker image is available (builds if needed)."""
-        ensure_docker_image(
-            self.docker_image,
-            self.dockerfile_path,
-            context_dir=os.path.dirname(self.dockerfile_path),
-        )
 
     @staticmethod
     def solution_template(function_name="solve"):
@@ -60,55 +49,6 @@ class GoPlugin(LanguagePlugin):
         }}
         return []int{{}}
     }}
-"""
-
-    def generate_wrapper_template(self, function_name: str) -> str:
-        """Generate Go wrapper for single test execution."""
-        return f"""package main
-
-import (
-    "encoding/json"
-    "fmt"
-    "os"
-    "time"
-    "runtime"
-    "runtime/debug"
-)
-
-func main() {{
-    // Parse input args (as JSON)
-    args := os.Args[1:]
-    var param1, param2 interface{{}}
-    json.Unmarshal([]byte(args[0]), &param1)
-    json.Unmarshal([]byte(args[1]), &param2)
-
-    // Start memory and time profiling
-    debug.FreeOSMemory()
-    var mStart, mEnd runtime.MemStats
-    runtime.ReadMemStats(&mStart)
-    t0 := time.Now()
-
-    // Call the function
-    result := {function_name}(param1, param2)
-
-    t1 := time.Now()
-    runtime.ReadMemStats(&mEnd)
-    peakMem := mEnd.Alloc - mStart.Alloc
-
-    // Print profile info
-    fmt.Printf("{self.PROFILE_MARKER} %s\\n", toJson(map[string]interface{{}}{{
-        "time_ms": float64(t1.Sub(t0).Microseconds()) / 1000.0,
-        "mem_bytes": peakMem,
-    }}))
-
-    // Print result as JSON
-    fmt.Println(toJson(result))
-}}
-
-func toJson(v interface{{}}) string {{
-    b, _ := json.Marshal(v)
-    return string(b)
-}}
 """
 
     def generate_test_driver_template(self, function_name: str) -> str:
@@ -191,231 +131,47 @@ func toJson(v interface{{}}) string {{
     }}
     return string(b)
 }}
-"""
+"""  # noqa: W293
 
-    def _get_cached_binary_path(self, workdir: str) -> str:
-        """Get the path for cached binary."""
-        cache_dir = os.path.join(workdir, ".cache")
-        return os.path.join(cache_dir, "solution.bin")
+    def _get_driver_filename(self) -> str:
+        """Get the filename for the test driver file."""
+        return "main.go"  # For Go, we use the same filename
 
-    def _should_rebuild(self, workdir: str) -> bool:
-        """Check if we need to rebuild the binary."""
-        solution_path = os.path.join(workdir, self.solution_filename)
-        cached_binary = self._get_cached_binary_path(workdir)
-
-        if not os.path.exists(cached_binary):
-            return True
-
-        if not os.path.exists(solution_path):
-            return True
-
-        # Check if source is newer than binary
-        return os.path.getmtime(solution_path) > os.path.getmtime(cached_binary)
-
-    def run(
-        self, workdir: str, function_name: str, input_args: list, input_data: str = None
-    ) -> tuple:
-        """Run a single test case. Go requires compilation first."""
-        self.ensure_image()
-
-        # Get configuration
-        config = get_config()
-
-        # Prepare paths
-        container_name = self._container_name(workdir)
-        problems_dir = self._get_problems_dir(workdir)
-        cache_dir = str(config.get_cache_dir())
-
-        # Start container
-        start_hot_container(
-            self.docker_image,
-            workdir,
-            container_name,
-            problems_dir=problems_dir,
-            cache_dir=cache_dir
-        )
-
-        # Prepare workspace
-        wrapper_path = self._prepare_workspace(workdir, function_name)
+    def _get_batch_command(self, driver_path: str) -> list:
+        """Get the command to run for batch testing."""
+        # For Go, we need to build the binary first
+        problems_dir = self._get_problems_dir(os.path.dirname(driver_path))
+        workdir = os.path.dirname(driver_path)
         container_workdir = self._get_container_workdir(workdir)
 
-        # Check if we need to build
-        if config.cache.compile_cache and not self._should_rebuild(workdir):
-            # Use cached binary
-            cached_binary = self._get_cached_binary_path(workdir)
-            container_binary = self._to_container_path(cached_binary, problems_dir)
+        # Prepare cache directory
+        cache_dir_path = os.path.join(workdir, ".cache")
+        os.makedirs(cache_dir_path, exist_ok=True)
 
-            # Make sure binary is executable
-            chmod_cmd = ["chmod", "+x", container_binary]
-            execute_in_container(container_name, chmod_cmd, working_dir=container_workdir)
-
-            command = [container_binary] + [json.dumps(arg) for arg in input_args]
-        else:
-            # Build the binary
-            cache_dir_path = os.path.join(workdir, ".cache")
-            os.makedirs(cache_dir_path, exist_ok=True)
-
-            output_path = self._to_container_path(
-                self._get_cached_binary_path(workdir),
-                problems_dir
-            )
-
-            build_cmd = [
-                "go", "build",
-                "-o", output_path,
-                "main.go", self.solution_filename
-            ]
-
-            _, build_stderr, build_exit = execute_in_container(
-                container_name,
-                build_cmd,
-                working_dir=container_workdir
-            )
-
-            if build_exit != 0:
-                self._cleanup_files(wrapper_path)
-                return None, "", build_stderr, build_exit, None, None, None
-
-            # Run the binary
-            command = [output_path] + [json.dumps(arg) for arg in input_args]
-
-        # Execute
-        stdout, stderr, exit_code = execute_in_container(
-            container_name,
-            command,
-            working_dir=container_workdir,
-            input_data=input_data
+        output_path = self._to_container_path(
+            os.path.join(cache_dir_path, "batch_solution.bin"), problems_dir
         )
 
-        stdout_lines = stdout.rstrip().splitlines()
-        result, extra_stdout, profile_info = self._parse_profile_output(stdout_lines)
-
-        # Clean up
-        self._cleanup_files(wrapper_path)
-
-        return result, extra_stdout, stderr, exit_code, None, None, profile_info
-
-    def run_many(
-        self,
-        workdir: str,
-        function_name: str,
-        input_args_list: list,
-        input_data_list: list = None,
-    ) -> list:
-        """Run multiple test cases efficiently. Go requires compilation first."""
-        self.ensure_image()
-
-        # Get configuration
-        config = get_config()
-
-        # Prepare paths
         container_name = self._container_name(workdir)
-        problems_dir = self._get_problems_dir(workdir)
-        cache_dir = str(config.get_cache_dir())
 
-        # Start container
-        start_hot_container(
-            self.docker_image,
-            workdir,
-            container_name,
-            problems_dir=problems_dir,
-            cache_dir=cache_dir
+        # Build
+        build_cmd = [
+            "go",
+            "build",
+            "-o",
+            output_path,
+            "main.go",
+            self.solution_filename,
+        ]
+
+        _, build_stderr, build_exit = execute_in_container(
+            container_name, build_cmd, working_dir=container_workdir
         )
 
-        inputs_json_path = os.path.join(workdir, "inputs.json")
-        driver_path = os.path.join(workdir, "main.go")
+        if build_exit != 0:
+            raise RuntimeError(f"Build failed: {build_stderr}")
 
-        try:
-            # Write inputs
-            with open(inputs_json_path, "w") as f:
-                json.dump(input_args_list, f)
-
-            # Write driver
-            driver_code = self.generate_test_driver_template(function_name)
-            with open(driver_path, "w") as f:
-                f.write(driver_code)
-
-            # Prepare cache directory
-            cache_dir_path = os.path.join(workdir, ".cache")
-            os.makedirs(cache_dir_path, exist_ok=True)
-
-            output_path = self._to_container_path(
-                os.path.join(cache_dir_path, "batch_solution.bin"),
-                problems_dir
-            )
-
-            container_workdir = self._get_container_workdir(workdir)
-
-            # Build
-            build_cmd = [
-                "go", "build",
-                "-o", output_path,
-                "main.go", self.solution_filename
-            ]
-
-            _, build_stderr, build_exit = execute_in_container(
-                container_name,
-                build_cmd,
-                working_dir=container_workdir
-            )
-
-            if build_exit != 0:
-                return self._create_error_results(
-                    len(input_args_list), "", build_stderr, build_exit
-                )
-
-            # Execute
-            command = [output_path]
-            stdout, stderr, exit_code = execute_in_container(
-                container_name,
-                command,
-                working_dir=container_workdir
-            )
-
-            # Parse results using common helper
-            return self._parse_batch_output(stdout, stderr, exit_code, input_args_list)
-
-        finally:
-            self._cleanup_files(inputs_json_path, driver_path)
-
-    def _prepare_workspace(self, workdir: str, function_name: str) -> str:
-        """Write the wrapper (main.go) into the workspace."""
-        wrapper_code = self.generate_wrapper_template(function_name)
-        wrapper_path = os.path.join(workdir, "main.go")
-        with open(wrapper_path, "w") as f:
-            f.write(wrapper_code)
-        return wrapper_path
-
-    def _parse_profile_output(self, stdout_lines: list) -> tuple:
-        """Parse stdout to extract result and profile info."""
-        profile_info = None
-        result_line = ""
-        extra_stdout = []
-
-        for line in stdout_lines:
-            if line.startswith(self.PROFILE_MARKER):
-                try:
-                    profile_json = line.replace(self.PROFILE_MARKER, "").strip()
-                    profile_info = json.loads(profile_json)
-                except Exception:
-                    profile_info = None
-            else:
-                result_line = line
-                extra_stdout.append(line)
-
-        # Remove the result line from extra stdout if it's the last line
-        if extra_stdout and extra_stdout[-1] == result_line:
-            extra_stdout = extra_stdout[:-1]
-
-        extra_stdout_str = "\n".join(extra_stdout)
-
-        # Parse result
-        try:
-            result = json.loads(result_line)
-        except Exception:
-            result = result_line
-
-        return result, extra_stdout_str, profile_info
+        return [output_path]
 
     def _parse_single_case_output(
         self, case_output: str, stderr: str, exit_code: int, case_index: int

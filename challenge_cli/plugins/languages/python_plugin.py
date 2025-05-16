@@ -1,22 +1,11 @@
 import json
 import os
 
-from challenge_cli.core.config import get_config
-
-from ..docker_utils import (
-    ensure_docker_image,
-    execute_in_container,
-    start_hot_container,
-)
 from ..language_plugin import LanguagePlugin
 
 
 class PythonPlugin(LanguagePlugin):
-    """
-    Python language plugin for the Challenge CLI.
-
-    Uses enhanced LanguagePlugin base class with common template functionality.
-    """
+    """Python language plugin for the Challenge CLI."""
 
     name = "python"
     aliases = ["py"]
@@ -26,13 +15,13 @@ class PythonPlugin(LanguagePlugin):
     )
     solution_filename = "solution.py"
 
-    def ensure_image(self):
-        """Ensure the Docker image is available (builds if needed)."""
-        ensure_docker_image(
-            self.docker_image,
-            self.dockerfile_path,
-            context_dir=os.path.dirname(self.dockerfile_path),
-        )
+    def _get_driver_filename(self) -> str:
+        """Get the filename for the test driver file."""
+        return "test_driver.py"
+
+    def _get_batch_command(self, driver_path: str) -> list:
+        """Get the command to run for batch testing."""
+        return ["python", "test_driver.py"]
 
     @staticmethod
     def solution_template(function_name="solve"):
@@ -45,32 +34,8 @@ class PythonPlugin(LanguagePlugin):
         pass
     """
 
-    def generate_wrapper_template(self, function_name: str) -> str:
-        """Generate Python wrapper for single test execution."""
-        return f"""
-import sys
-import json
-import time
-import tracemalloc
-from solution import Solution
-
-if __name__ == "__main__":
-    args = [json.loads(arg) for arg in sys.argv[1:]]
-    sol = Solution()
-    tracemalloc.start()
-    t0 = time.perf_counter()
-    result = sol.{function_name}(*args)
-    t1 = time.perf_counter()
-    current, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-    print("{self.PROFILE_MARKER} " + json.dumps({{
-        "time_ms": (t1-t0)*1000,
-        "mem_bytes": peak
-    }}))
-    print(json.dumps(result))
-"""
-
     def generate_test_driver_template(self, function_name: str) -> str:
+        """Generate Python test driver for batch execution."""
         solution_module = self.solution_filename.split(".")[0]
         return f"""
 import sys
@@ -132,143 +97,10 @@ if __name__ == "__main__":
     print("{self.END_OUTPUT}")
 """
 
-    def run(
-        self, workdir: str, function_name: str, input_args: list, input_data: str = None
-    ) -> tuple:
-        """Run a single test case."""
-        self.ensure_image()
-
-        # Get configuration
-        config = get_config()
-
-        # Prepare paths
-        container_name = self._container_name(workdir)
-        problems_dir = self._get_problems_dir(workdir)
-        cache_dir = str(config.get_cache_dir())
-
-        # Start container
-        start_hot_container(
-            self.docker_image,
-            workdir,
-            container_name,
-            problems_dir=problems_dir,
-            cache_dir=cache_dir,
-        )
-
-        # Prepare wrapper
-        wrapper_path = self._prepare_workspace(workdir, function_name)
-        container_workdir = self._get_container_workdir(workdir)
-
-        command = ["python", "main.py"] + [json.dumps(arg) for arg in input_args]
-        stdout, stderr, exit_code = execute_in_container(
-            container_name,
-            command,
-            working_dir=container_workdir,
-            input_data=input_data,
-        )
-
-        stdout_lines = stdout.rstrip().splitlines()
-        result, extra_stdout, profile_info = self._parse_profile_output(stdout_lines)
-
-        self._cleanup_files(wrapper_path)
-
-        return result, extra_stdout, stderr, exit_code, None, None, profile_info
-
-    def run_many(
-        self,
-        workdir: str,
-        function_name: str,
-        input_args_list: list,
-        input_data_list: list = None,
-    ) -> list:
-        """Run multiple test cases efficiently."""
-        self.ensure_image()
-
-        # Get configuration
-        config = get_config()
-
-        # Prepare paths
-        container_name = self._container_name(workdir)
-        problems_dir = self._get_problems_dir(workdir)
-        cache_dir = str(config.get_cache_dir())
-
-        # Start container
-        start_hot_container(
-            self.docker_image,
-            workdir,
-            container_name,
-            problems_dir=problems_dir,
-            cache_dir=cache_dir,
-        )
-
-        inputs_json_path = os.path.join(workdir, "inputs.json")
-        driver_path = os.path.join(workdir, "test_driver.py")
-
-        try:
-            # Write inputs
-            with open(inputs_json_path, "w") as f:
-                json.dump(input_args_list, f)
-
-            # Write driver
-            driver_code = self.generate_test_driver_template(function_name)
-            with open(driver_path, "w") as f:
-                f.write(driver_code)
-
-            # Execute
-            container_workdir = self._get_container_workdir(workdir)
-            command = ["python", "test_driver.py"]
-            stdout, stderr, exit_code = execute_in_container(
-                container_name, command, working_dir=container_workdir, input_data=None
-            )
-
-            # Parse results using common helper
-            return self._parse_batch_output(stdout, stderr, exit_code, input_args_list)
-
-        finally:
-            self._cleanup_files(inputs_json_path, driver_path)
-
-    def _prepare_workspace(self, workdir: str, function_name: str) -> str:
-        """Write the wrapper (main.py) into the workspace."""
-        wrapper_code = self.generate_wrapper_template(function_name)
-        wrapper_path = os.path.join(workdir, "main.py")
-        with open(wrapper_path, "w") as f:
-            f.write(wrapper_code)
-        return wrapper_path
-
-    def _parse_profile_output(self, stdout_lines: list) -> tuple:
-        """Parse stdout to extract result and profile info."""
-        profile_info = None
-        result_line = ""
-        extra_stdout = []
-
-        for line in stdout_lines:
-            if line.startswith(self.PROFILE_MARKER):
-                try:
-                    profile_json = line.replace(self.PROFILE_MARKER, "").strip()
-                    profile_info = json.loads(profile_json)
-                except Exception:
-                    profile_info = None
-            else:
-                result_line = line
-                extra_stdout.append(line)
-
-        # Remove the result line from extra stdout if it's the last line
-        if extra_stdout and extra_stdout[-1] == result_line:
-            extra_stdout = extra_stdout[:-1]
-
-        extra_stdout_str = "\n".join(extra_stdout)
-
-        # Parse result
-        try:
-            result = json.loads(result_line)
-        except Exception:
-            result = result_line
-
-        return result, extra_stdout_str, profile_info
-
     def _parse_single_case_output(
         self, case_output: str, stderr: str, exit_code: int, case_index: int
     ) -> tuple:
+        """Parse output for a single test case in batch execution."""
         try:
             data = json.loads(case_output)
             parsed_result = data.get("result")
